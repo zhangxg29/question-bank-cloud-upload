@@ -3,7 +3,8 @@
 项目已经接好 AI 解析入口：
 
 - 函数：`netlify/functions/ai-analysis.js`
-- 配置：`app-config.js` 里的 `aiAnalysisEndpoint` 已指向 `/.netlify/functions/ai-analysis`
+- 配置：`app-config.js` 里的 `aiAnalysisEndpoint` 保持 `/api/ai-analysis`
+- Netlify 会通过 `netlify.toml` 把 `/api/ai-analysis` 转到 `/.netlify/functions/ai-analysis`
 - Netlify 配置：`netlify.toml` 已指定发布目录和函数目录
 
 OpenAI API key 不要写进前端文件，只放到 Netlify 环境变量。
@@ -56,7 +57,7 @@ OPENAI_MODEL=gpt-5.6-luna
 `app-config.js` 里保持：
 
 ```js
-aiAnalysisEndpoint: "/.netlify/functions/ai-analysis",
+aiAnalysisEndpoint: "/api/ai-analysis",
 ```
 
 不要把 OpenAI key 放在 `app-config.js`。
@@ -82,7 +83,7 @@ Netlify 环境变量没有添加，或添加后没有重新部署。
 
 `Site configuration` -> `Functions` -> `ai-analysis`
 
-也可以打开浏览器开发者工具，查看 Network 里 `/.netlify/functions/ai-analysis` 的返回。
+也可以打开浏览器开发者工具，查看 Network 里 `/api/ai-analysis` 或 `/.netlify/functions/ai-analysis` 的返回。
 
 ### 本地直接打开 HTML 时不能用 AI解析
 
