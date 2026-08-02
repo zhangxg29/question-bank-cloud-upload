@@ -4,9 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>输气工刷题系统</title>
-    <link rel="stylesheet" href="./styles.css?v=20260802-mobile-profile" />
-    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+    <link rel="stylesheet" href="./styles.css?v=20260802-unified" />
+    <script src="./vendor/vue.global.prod.js"></script>
+    <script src="./vendor/mammoth.browser.min.js"></script>
+    <script>
+      (function () {
+        var tab = new URLSearchParams(window.location.search).get("tab");
+        if (tab) window.INITIAL_TAB = tab;
+      })();
+    </script>
     <script src="./app-config.js"></script>
   </head>
   <body>
@@ -103,17 +109,20 @@
             </div>
             <div class="form-grid profile-grid">
               <label>
-                显示名称
-                <input v-model.trim="profileForm.name" placeholder="例如：张三" />
+                Email
+                <input v-model.trim="profileForm.email" type="email" autocomplete="username" placeholder="name@example.com" />
               </label>
               <label>
-                口令
-                <input v-model.trim="profileForm.pin" type="password" placeholder="至少 4 位" inputmode="numeric" />
+                Password
+                <input v-model.trim="profileForm.password" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
               </label>
             </div>
             <div class="actions">
-              <button @click="loginProfile">登录 / 切换</button>
-              <button class="ghost" @click="logoutProfile">退出当前</button>
+              <button @click="loginProfile">{{ profileForm.mode === 'sign_up' ? 'Create account' : 'Sign in' }}</button>
+              <button class="ghost" @click="profileForm.mode = profileForm.mode === 'sign_up' ? 'sign_in' : 'sign_up'">
+                {{ profileForm.mode === 'sign_up' ? 'Use existing account' : 'Create account' }}
+              </button>
+              <button class="ghost" @click="logoutProfile">Sign out</button>
             </div>
             <div class="profile-summary">
               <article>

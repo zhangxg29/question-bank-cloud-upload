@@ -1,5 +1,12 @@
 create extension if not exists pgcrypto;
 
+-- 字段兼容性说明：
+-- questions.question / option_a~d / analysis 与 stem / options(jsonb) / explanation
+-- 是“新老两套并存”的镜像字段；answer_records.answer / correct 与
+-- submitted_answer / is_correct 同理。前端会同时读写两套以兼容旧数据，
+-- 因此暂不删除（删除需先迁移前端与导入脚本，风险大于收益）。
+-- 新写入数据以 stem / options / explanation 为准，老字段由程序同步补齐。
+
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql

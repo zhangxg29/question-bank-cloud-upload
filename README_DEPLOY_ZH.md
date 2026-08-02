@@ -17,6 +17,23 @@
    - anon public key
 4. Storage bucket `question-files` 现在只是兼容旧上传记录用；新版“写入后台题库”不会再上传原文件到 Storage。
 
+## 1.5 SQL 执行顺序（2026-08-02 优化版）
+
+本次优化新增了两个 SQL 文件，部署时按顺序执行：
+
+1. `supabase-schema.sql` —— 建表 + 索引（全新项目才需要；老项目跳过）
+2. `supabase-rls-hardening.sql` —— 收紧数据库权限（新增 admins 管理员表、is_admin() 校验）
+3. `supabase-query-optimization.sql` —— 新增 random_questions 随机取题函数
+
+执行完第 2 步后，先把自己设为管理员，否则网页端的导入/删除题库功能会被拒绝：
+
+```sql
+insert into public.admins (user_id)
+select id from auth.users where email = '你的邮箱';
+```
+
+权限变化摘要：题库所有人可浏览，只有管理员能增删改；答题记录/收藏/考试成绩只有本人能读写。
+
 ## 2. 配置前端连接
 
 编辑 `outputs/supabase-static-site/app-config.js`：
@@ -79,6 +96,20 @@ window.APP_CONFIG = {
 - `chapters`
 
 当前 AI 解析暂停，`app-config.js` 里的 `aiAnalysisEndpoint` 保持空字符串即可。
+
+## 6.5 前端依赖（CDN）说明
+
+页面已完全本地化，不再依赖任何 CDN，三个库放在 `vendor/` 目录：
+
+- `vendor/vue.global.prod.js` —— Vue 3（3.5.13，生产版）
+- `vendor/mammoth.browser.min.js` —— mammoth 1.8.0（解析 docx 用）
+- `vendor/supabase.mjs` —— @supabase/supabase-js 2.111.0（esbuild 打成单文件自包含 ESM）
+
+部署时请把整个 `vendor/` 目录一起上传，不要单独漏掉。
+如需升级版本：替换对应文件，并把 `supabase.js` 顶部的 `./vendor/supabase.mjs`
+导入路径保持一致即可。页面其余部分无外网请求。
+
+部署完成后建议用手机和电脑各打开一次，确认页面正常加载。
 
 ## 7. 常见检查项
 

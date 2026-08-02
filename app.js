@@ -1,11 +1,15 @@
 import {
   getQuestionCount,
   getQuestions,
-  getRandomQuestions,
-  getQuestionsByLevel,
+  getQuestionsCached,
+  getRandomQuestionsByLevel,
+  getCurrentAuthUser,
   hasSupabaseConfig,
   normalizeQuestionRow,
   resolveUserId,
+  signInWithPassword,
+  signOutUser,
+  signUpWithPassword,
   supabaseClient,
 } from "./supabase.js";
 
@@ -41,8 +45,7 @@ const EXAM_RULE = {
 const CONFIG = window.APP_CONFIG || {};
 const AI_ANALYSIS_ENABLED = Boolean(CONFIG.aiAnalysisEndpoint);
 const CSV_REQUIRED_FIELDS = ["question", "answer", "level"];
-const USER_ID_KEY = "question_bank_user_id";
-const PROFILE_NAME_KEY = "question_bank_profile_name";
+const AUTH_EMAIL_KEY = "question_bank_auth_email";
 
 function escapeHtml(text) {
   return String(text || "")
@@ -177,16 +180,6 @@ function makeFingerprint(question) {
   return crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload)).then((buf) =>
     [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("")
   );
-}
-
-async function makeProfileId(name, pin) {
-  const payload = `question-bank-profile:${String(name || "").trim()}:${String(pin || "").trim()}`;
-  const buffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
-  const hex = [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32).split("");
-  hex[12] = "4";
-  hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
-  const id = hex.join("");
-  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
 }
 
 function fileExt(name) {
@@ -435,8 +428,14 @@ createApp({
     const ready = ref(Boolean(hasSupabaseConfig && supabase));
     const tab = ref(window.INITIAL_TAB || "home");
     const userId = ref("");
-    const profileName = ref(localStorage.getItem(PROFILE_NAME_KEY) || "");
-    const profileForm = ref({ name: profileName.value, pin: "" });
+    const profileName = ref("");
+    const authEmail = ref("");
+    const profileForm = ref({
+      mode: "sign_in",
+      name: "",
+      email: localStorage.getItem(AUTH_EMAIL_KEY) || "",
+      password: "",
+    });
     const message = ref("");
     const error = ref("");
     const uploadStatus = ref({ state: "idle", title: "", detail: "" });
@@ -649,11 +648,11 @@ createApp({
       return QUESTION_TYPES.find((item) => item.value === value)?.label || value || "未知";
     }
 
-    function buildExamPlan(singles, multiples, judges) {
+    function buildExamPlan(available) {
       const planned = {
-        single: Math.min(singles.length, EXAM_RULE.single),
-        multiple: Math.min(multiples.length, EXAM_RULE.multiple),
-        judge: Math.min(judges.length, EXAM_RULE.judge),
+        single: Math.min(available.single || 0, EXAM_RULE.single),
+        multiple: Math.min(available.multiple || 0, EXAM_RULE.multiple),
+        judge: Math.min(available.judge || 0, EXAM_RULE.judge),
       };
       const total = planned.single + planned.multiple + planned.judge;
       const full = planned.single === EXAM_RULE.single
@@ -685,10 +684,6 @@ createApp({
       examStartedAt.value = null;
     }
 
-    function pickRandomItems(list, count) {
-      return [...list].sort(() => Math.random() - 0.5).slice(0, count);
-    }
-
     function toggleExamReveal(questionId) {
       const next = new Set(examRevealSet.value);
       if (next.has(questionId)) next.delete(questionId);
@@ -709,35 +704,71 @@ createApp({
       return supabase;
     }
 
+    async function syncAuthState() {
+      const user = await getCurrentAuthUser();
+      userId.value = user?.id || "";
+      authEmail.value = user?.email || "";
+      profileName.value = user?.user_metadata?.display_name
+        || user?.user_metadata?.full_name
+        || user?.email
+        || "";
+      if (authEmail.value) {
+        localStorage.setItem(AUTH_EMAIL_KEY, authEmail.value);
+        profileForm.value.email = authEmail.value;
+      }
+      return user;
+    }
+
+    async function requireSignedIn() {
+      if (!userId.value) await syncAuthState();
+      if (!userId.value) {
+        tab.value = "profile";
+        throw new Error("请先用邮箱和密码登录，再保存学习记录或管理题库。");
+      }
+      return userId.value;
+    }
+
     async function ensureProfile(client) {
+      if (!userId.value) return;
       const result = await client.from("profiles").upsert({
         id: userId.value,
-        username: profileName.value || `用户${userId.value.slice(0, 8)}`,
+        username: profileName.value || authEmail.value || `用户${userId.value.slice(0, 8)}`,
       }, { onConflict: "id" });
       if (result.error) throw result.error;
     }
 
     function fillCurrentProfile() {
       profileForm.value = {
+        mode: "sign_in",
         name: profileName.value || "",
-        pin: "",
+        email: authEmail.value || profileForm.value.email || "",
+        password: "",
       };
     }
 
     async function loginProfile() {
       try {
+        const client = await ensureClient();
+        const email = profileForm.value.email.trim();
+        const password = profileForm.value.password.trim();
         const name = profileForm.value.name.trim();
-        const pin = profileForm.value.pin.trim();
-        if (!name) throw new Error("请输入显示名称");
-        if (pin.length < 4) throw new Error("口令至少 4 位，用来在不同手机上回到同一个个人记录");
-        const id = await makeProfileId(name, pin);
-        localStorage.setItem(USER_ID_KEY, id);
-        localStorage.setItem(PROFILE_NAME_KEY, name);
-        userId.value = id;
-        profileName.value = name;
-        profileForm.value.pin = "";
-        setMessage(`已登录：${name}`);
-        tab.value = "practice";
+        if (!email) throw new Error("请输入邮箱");
+        if (password.length < 6) throw new Error("密码至少 6 位");
+        const result = profileForm.value.mode === "sign_up"
+          ? await signUpWithPassword(email, password, name || email)
+          : await signInWithPassword(email, password);
+        if (result.error) throw result.error;
+        profileForm.value.password = "";
+        localStorage.setItem(AUTH_EMAIL_KEY, email);
+        await syncAuthState();
+        if (userId.value) {
+          await ensureProfile(client);
+          setMessage(profileForm.value.mode === "sign_up" ? "注册并登录成功。" : `已登录：${profileName.value || email}`);
+          tab.value = "practice";
+        } else {
+          setMessage("注册成功，请按 Supabase 邮件确认设置完成后再登录。");
+          tab.value = "profile";
+        }
         await loadAll();
       } catch (err) {
         setError(err.message || String(err));
@@ -746,13 +777,19 @@ createApp({
 
     async function logoutProfile() {
       try {
-        localStorage.removeItem(USER_ID_KEY);
-        localStorage.removeItem(PROFILE_NAME_KEY);
+        const result = await signOutUser();
+        if (result.error) throw result.error;
         profileName.value = "";
-        profileForm.value = { name: "", pin: "" };
-        userId.value = await resolveUserId();
+        authEmail.value = "";
+        userId.value = "";
+        profileForm.value = {
+          mode: "sign_in",
+          name: "",
+          email: localStorage.getItem(AUTH_EMAIL_KEY) || "",
+          password: "",
+        };
         await loadAll();
-        setMessage("已退出个人档案，当前使用本机临时档案。");
+        setMessage("已退出登录。题库仍可浏览，收藏、答题记录和考试记录需登录后保存。");
         tab.value = "profile";
       } catch (err) {
         setError(err.message || String(err));
@@ -782,17 +819,16 @@ createApp({
       try {
         const client = await ensureClient();
         console.log("Supabase连接", supabaseClient);
-        const data = [];
-        for (const level of LEVELS) {
-          const total = await getQuestionCount(levelCountKeys(level));
-          data.push({
-            ...level,
-            total,
-            done: 0,
-            correctRate: 0,
-            progress: 0,
-          });
-        }
+        const counts = await Promise.all(
+          LEVELS.map((level) => getQuestionCount(levelCountKeys(level)))
+        );
+        const data = LEVELS.map((level, index) => ({
+          ...level,
+          total: counts[index],
+          done: 0,
+          correctRate: 0,
+          progress: 0,
+        }));
         console.log("题库数量", data);
         levelDashboard.value = data;
         updateDashboardProgress();
@@ -805,31 +841,37 @@ createApp({
       }
     }
 
-    async function loadAll() {
+    async function loadAll(forceFresh = false) {
       const client = await ensureClient();
       if (!userId.value) userId.value = await resolveUserId();
-      await ensureProfile(client);
+      await syncAuthState();
       const [
         sourceResult,
         questionList,
-        favoriteResult,
-        recordResult,
         chapterResult,
-        examRecordResult,
       ] = await Promise.all([
         client.from("source_files").select("*").order("created_at", { ascending: false }),
-        getQuestions(),
-        client.from("favorites").select("question_id").eq("user_id", userId.value),
-        client.from("answer_records").select("*").eq("user_id", userId.value),
+        (forceFresh ? getQuestions() : getQuestionsCached()),
         client.from("chapters").select("*").order("level", { ascending: true }).order("sort_order", { ascending: true }),
-        client.from("exam_records").select("*").eq("user_id", userId.value).order("created_at", { ascending: false }),
       ]);
 
       if (sourceResult.error) throw sourceResult.error;
-      if (favoriteResult.error) throw favoriteResult.error;
-      if (recordResult.error) throw recordResult.error;
       if (chapterResult.error) throw chapterResult.error;
-      if (examRecordResult.error) throw examRecordResult.error;
+
+      let favoriteResult = { data: [] };
+      let recordResult = { data: [] };
+      let examRecordResult = { data: [] };
+      if (userId.value) {
+        await ensureProfile(client);
+        [favoriteResult, recordResult, examRecordResult] = await Promise.all([
+          client.from("favorites").select("question_id").eq("user_id", userId.value),
+          client.from("answer_records").select("*").eq("user_id", userId.value),
+          client.from("exam_records").select("*").eq("user_id", userId.value).order("created_at", { ascending: false }),
+        ]);
+        if (favoriteResult.error) throw favoriteResult.error;
+        if (recordResult.error) throw recordResult.error;
+        if (examRecordResult.error) throw examRecordResult.error;
+      }
 
       sourceFiles.value = sourceResult.data || [];
       questions.value = questionList || [];
@@ -1070,6 +1112,7 @@ createApp({
     async function uploadAndParse() {
       try {
         const client = await ensureClient();
+        await requireSignedIn();
         const files = uploadForm.value.files && uploadForm.value.files.length
           ? uploadForm.value.files
           : (uploadForm.value.file ? [uploadForm.value.file] : []);
@@ -1097,7 +1140,7 @@ createApp({
         uploadForm.value.files = [];
         uploadForm.value.folderName = "";
         uploadForm.value.skippedCount = 0;
-        await loadAll();
+        await loadAll(true);
       } catch (err) {
         setUploadStatus("failed", "保存失败", err.message || String(err));
         setError(err.message || String(err));
@@ -1144,8 +1187,16 @@ createApp({
 
     function shuffleQuestions() {
       practiceFilter.value.order = practiceFilter.value.order === "random" ? "newest" : "random";
-      visibleQuestions.value.sort(() => Math.random() - 0.5);
+      shuffleInPlace(visibleQuestions.value);
       resetPractice();
+    }
+
+    function shuffleInPlace(list) {
+      for (let i = list.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [list[i], list[j]] = [list[j], list[i]];
+      }
+      return list;
     }
 
     function loadIntoPractice(item) {
@@ -1217,6 +1268,7 @@ createApp({
     async function toggleFavorite(item) {
       try {
         const client = await ensureClient();
+        await requireSignedIn();
         if (favoriteSet.value.has(item.id)) {
           const result = await client.from("favorites").delete().eq("question_id", item.id).eq("user_id", userId.value);
           if (result.error) throw result.error;
@@ -1235,6 +1287,7 @@ createApp({
       try {
         practiceSubmitting.value = true;
         const client = await ensureClient();
+        await requireSignedIn();
         const question = currentQuestion.value;
         if (!question) throw new Error("没有当前题目");
 
@@ -1321,6 +1374,7 @@ createApp({
     async function saveQuestion() {
       try {
         const client = await ensureClient();
+        await requireSignedIn();
         const payload = {
           level: editor.value.level,
           category: editor.value.category,
@@ -1373,7 +1427,7 @@ createApp({
         if (result.error) throw result.error;
         setMessage(editingId.value ? "题目已更新" : "题目已保存");
         clearEditor();
-        await loadAll();
+        await loadAll(true);
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1383,9 +1437,10 @@ createApp({
       try {
         if (!confirm(`删除题目：${item.stem.slice(0, 24)}？`)) return;
         const client = await ensureClient();
+        await requireSignedIn();
         const result = await client.from("questions").delete().eq("id", item.id);
         if (result.error) throw result.error;
-        await loadAll();
+        await loadAll(true);
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1395,6 +1450,7 @@ createApp({
       try {
         if (!confirm(`删除上传记录：${item.original_name}？`)) return;
         const client = await ensureClient();
+        await requireSignedIn();
         if (item.storage_path) {
           const storageResult = await client.storage.from(CONFIG.bucket || "question-files").remove([item.storage_path]);
           if (storageResult.error) throw storageResult.error;
@@ -1411,30 +1467,42 @@ createApp({
       try {
         if (!examForm.value.level) throw new Error("请先选择考试等级");
         resetExamState();
-        const levelPool = (await getQuestionsByLevel(examForm.value.level)).filter((item) => item.question_type !== "practical");
-        const singles = levelPool.filter((item) => item.question_type === "single");
-        const multiples = levelPool.filter((item) => item.question_type === "multiple");
-        const judges = levelPool.filter((item) => item.question_type === "judge");
-        const plan = buildExamPlan(singles, multiples, judges);
+        const levelObj = LEVELS.find((item) => item.value === examForm.value.level)
+          || { value: examForm.value.level, label: examForm.value.level };
+        const levelKeys = levelCountKeys(levelObj);
+        const [singleCount, multipleCount, judgeCount] = await Promise.all([
+          getQuestionCount(levelKeys, ["single"]),
+          getQuestionCount(levelKeys, ["multiple"]),
+          getQuestionCount(levelKeys, ["judge"]),
+        ]);
+        const plan = buildExamPlan({ single: singleCount, multiple: multipleCount, judge: judgeCount });
         if (!plan.total) throw new Error("当前等级还没有可用于考试的单选、多选或判断题");
 
+        const [singles, multiples, judges] = await Promise.all([
+          getRandomQuestionsByLevel(levelKeys, ["single"], plan.single),
+          getRandomQuestionsByLevel(levelKeys, ["multiple"], plan.multiple),
+          getRandomQuestionsByLevel(levelKeys, ["judge"], plan.judge),
+        ]);
         examQuestions.value = [
-          ...pickRandomItems(singles, plan.single),
-          ...pickRandomItems(multiples, plan.multiple),
-          ...pickRandomItems(judges, plan.judge),
-        ].sort(() => Math.random() - 0.5);
+          ...singles,
+          ...multiples,
+          ...judges,
+        ];
+        shuffleInPlace(examQuestions.value);
         examAnswers.value = {};
         examResult.value = null;
         examSecondsLeft.value = EXAM_RULE.minutes * 60;
         examStartedAt.value = Date.now();
         examTimer.value = window.setInterval(() => {
-          examSecondsLeft.value -= 1;
-          if (examSecondsLeft.value <= 0) {
+          const totalMs = EXAM_RULE.minutes * 60 * 1000;
+          const remaining = Math.max(0, Math.ceil((totalMs - (Date.now() - examStartedAt.value)) / 1000));
+          if (remaining !== examSecondsLeft.value) examSecondsLeft.value = remaining;
+          if (remaining <= 0) {
             examSecondsLeft.value = 0;
             clearExamTimer();
             void submitExam();
           }
-        }, 1000);
+        }, 500);
         tab.value = "exam";
         if (!plan.full) {
           setMessage(`当前题库数量不足正式考试，已生成 ${plan.total} 题小型练习考。正式考试规则仍为 80 单选 + 10 多选 + 10 判断。`);
@@ -1466,6 +1534,7 @@ createApp({
         examInProgress.value = true;
         clearExamTimer();
         const client = await ensureClient();
+        await requireSignedIn();
         const wrongQuestions = [];
         const manualReview = [];
         let correctCount = 0;
@@ -1577,6 +1646,7 @@ createApp({
     async function importCsvQuestions() {
       try {
         const client = await ensureClient();
+        await requireSignedIn();
         if (!csvImport.value.validRows.length) throw new Error("没有可导入的CSV行");
         const rows = await Promise.all(csvImport.value.validRows.map(async (row) => {
           const payload = csvRowToQuestion(row);
@@ -1594,7 +1664,7 @@ createApp({
         const result = await insertQuestionBatches(client, rows);
         csvImport.value = { ...csvImport.value, imported: result.inserted };
         setMessage(`CSV导入完成：新增 ${result.inserted} 题，重复 ${result.duplicateOrSkipped} 题。`);
-        await loadAll();
+        await loadAll(true);
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1616,6 +1686,7 @@ createApp({
     async function saveChapter() {
       try {
         const client = await ensureClient();
+        await requireSignedIn();
         const payload = {
           level: chapterEditor.value.level,
           name: chapterEditor.value.name,
@@ -1638,6 +1709,7 @@ createApp({
       try {
         if (!confirm(`删除章节：${item.name}？题目不会被删除。`)) return;
         const client = await ensureClient();
+        await requireSignedIn();
         const result = await client.from("chapters").delete().eq("id", item.id);
         if (result.error) throw result.error;
         await loadAll();
@@ -1649,7 +1721,7 @@ createApp({
     async function refreshAll() {
       try {
         await loadDashboard();
-        await loadAll();
+        await loadAll(true);
         setMessage("数据已刷新");
       } catch (err) {
         setError(err.message || String(err));

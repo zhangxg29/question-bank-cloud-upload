@@ -1,7 +1,8 @@
-import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm";
+import { createClient } from "./vendor/supabase.mjs";
 
 const CONFIG = window.APP_CONFIG || {};
-const USER_ID_KEY = "question_bank_user_id";
+const QUESTION_CACHE_KEY = "question_bank_questions_v1";
+const QUESTION_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export const hasSupabaseConfig = Boolean(CONFIG.supabaseUrl && CONFIG.supabaseAnonKey);
 export const supabaseClient = hasSupabaseConfig
@@ -29,21 +30,6 @@ function inferQuestionType(row) {
   if (answer.includes("√") || answer.includes("×")) return "judge";
   if (answer.length > 1) return "multiple";
   return "single";
-}
-
-function levelAliases(level) {
-  const map = {
-    junior: "初级",
-    middle: "中级",
-    senior: "高级",
-    technician: "技师",
-    senior_technician: "高级技师",
-  };
-  return [...new Set([level, map[level]].filter(Boolean))];
-}
-
-function levelAndCommonAliases(level) {
-  return [...levelAliases(level), "common", "通用", "通用基础知识"];
 }
 
 function normalizeOptions(row) {
@@ -78,6 +64,42 @@ export function normalizeQuestionRow(row) {
   };
 }
 
+export async function getCurrentAuthUser() {
+  if (!supabaseClient) return null;
+  const { data, error } = await supabaseClient.auth.getUser();
+  if (error) return null;
+  return data?.user || null;
+}
+
+export async function signInWithPassword(email, password) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  return supabaseClient.auth.signInWithPassword({ email, password });
+}
+
+export async function signUpWithPassword(email, password, displayName) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  return supabaseClient.auth.signUp({
+    email,
+    password,
+    options: {
+      data: {
+        display_name: displayName,
+        full_name: displayName,
+      },
+    },
+  });
+}
+
+export async function signOutUser() {
+  if (!supabaseClient) return { error: null };
+  return supabaseClient.auth.signOut();
+}
+
+export async function resolveUserId() {
+  const user = await getCurrentAuthUser();
+  return user?.id || "";
+}
+
 async function fetchQuestionPages(buildQuery, pageSize = 1000) {
   const rows = [];
   for (let from = 0; ; from += pageSize) {
@@ -90,50 +112,36 @@ async function fetchQuestionPages(buildQuery, pageSize = 1000) {
   return rows;
 }
 
-export function getClientUserId() {
-  const existing = localStorage.getItem(USER_ID_KEY);
-  if (existing) return existing;
-  const id = crypto.randomUUID
-    ? crypto.randomUUID()
-    : "10000000-1000-4000-8000-100000000000".replace(/[018]/g, (char) =>
-      (Number(char) ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> Number(char) / 4).toString(16)
-    );
-  localStorage.setItem(USER_ID_KEY, id);
-  return id;
-}
-
-export async function resolveUserId() {
-  if (!supabaseClient) return getClientUserId();
-  const { data: sessionData } = await supabaseClient.auth.getSession();
-  const sessionUser = sessionData?.session?.user?.id;
-  if (sessionUser) {
-    localStorage.setItem(USER_ID_KEY, sessionUser);
-    return sessionUser;
-  }
-
-  if (CONFIG.useAnonymousAuth === true) {
-    try {
-      const signInResult = await supabaseClient.auth.signInAnonymously();
-      if (!signInResult.error && signInResult.data?.user?.id) {
-        localStorage.setItem(USER_ID_KEY, signInResult.data.user.id);
-        return signInResult.data.user.id;
-      }
-      console.warn("Supabase匿名登录未启用，已使用本地用户标识。", signInResult.error);
-    } catch (err) {
-      console.warn("Supabase匿名登录失败，已使用本地用户标识。", err);
-    }
-  }
-
-  return getClientUserId();
-}
-
 export async function getQuestions() {
   if (!supabaseClient) throw new Error("请先填写 app-config.js");
   const rows = await fetchQuestionPages(() => supabaseClient.from("questions").select("*").order("id", { ascending: false }));
   return rows.map(normalizeQuestionRow);
 }
 
-export async function getQuestionCount(level) {
+export async function getQuestionsCached({ force = false, ttlMs = QUESTION_CACHE_TTL_MS } = {}) {
+  if (!force) {
+    try {
+      const raw = localStorage.getItem(QUESTION_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        if (cached && Array.isArray(cached.data) && Date.now() - (cached.savedAt || 0) < ttlMs) {
+          return cached.data;
+        }
+      }
+    } catch (err) {
+      console.warn("题库缓存读取失败，将重新拉取", err);
+    }
+  }
+  const rows = await getQuestions();
+  try {
+    localStorage.setItem(QUESTION_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data: rows }));
+  } catch (err) {
+    console.warn("题库缓存写入失败（可能超出 localStorage 容量，继续使用网络数据）", err);
+  }
+  return rows;
+}
+
+export async function getQuestionCount(level, types = null) {
   if (!supabaseClient) throw new Error("请先填写 app-config.js");
   let query = supabaseClient.from("questions").select("*", { count: "exact", head: true });
   if (Array.isArray(level) && level.length > 1) {
@@ -143,22 +151,25 @@ export async function getQuestionCount(level) {
   } else if (level) {
     query = query.eq("level", level);
   }
+  if (Array.isArray(types) && types.length) {
+    query = query.in("question_type", types);
+  }
   const result = await query;
   if (result.error) throw result.error;
   return result.count || 0;
 }
 
-export async function getQuestionsByLevel(level) {
-  if (!supabaseClient) throw new Error("请先填写 app-config.js");
-  const rows = await fetchQuestionPages(() => supabaseClient
-    .from("questions")
-    .select("*")
-    .in("level", levelAndCommonAliases(level))
-    .order("id", { ascending: false }));
-  return rows.map(normalizeQuestionRow);
+export async function getRandomQuestions(number = 100) {
+  return getRandomQuestionsByLevel(null, null, number);
 }
 
-export async function getRandomQuestions(number = 100) {
-  const list = await getQuestions();
-  return [...list].sort(() => Math.random() - 0.5).slice(0, number);
+export async function getRandomQuestionsByLevel(level, types, count) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  const result = await supabaseClient.rpc("random_questions", {
+    p_levels: Array.isArray(level) ? level : level ? [level] : null,
+    p_types: types && types.length ? types : null,
+    p_limit: Math.max(0, Number(count) || 0),
+  });
+  if (result.error) throw result.error;
+  return (result.data || []).map(normalizeQuestionRow);
 }
