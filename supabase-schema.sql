@@ -21,6 +21,8 @@ create table if not exists public.source_files (
   original_name text not null,
   storage_path text,
   public_url text,
+  profession text not null default '输气工',
+  scope text not null default 'level',
   level text not null default 'junior',
   category text not null default '输气工基础技术',
   status text not null default 'uploaded',
@@ -33,6 +35,8 @@ create table if not exists public.source_files (
 
 create table if not exists public.questions (
   id bigserial primary key,
+  profession text not null default '输气工',
+  scope text not null default 'level',
   level text not null default 'junior',
   category text not null default '输气工基础技术',
   chapter text not null default '',
@@ -61,6 +65,8 @@ alter table public.source_files
   add column if not exists original_name text not null default '',
   add column if not exists storage_path text,
   add column if not exists public_url text,
+  add column if not exists profession text not null default '输气工',
+  add column if not exists scope text not null default 'level',
   add column if not exists level text not null default 'junior',
   add column if not exists category text not null default '输气工基础技术',
   add column if not exists status text not null default 'uploaded',
@@ -71,6 +77,8 @@ alter table public.source_files
   add column if not exists created_at timestamptz not null default now();
 
 alter table public.questions
+  add column if not exists profession text not null default '输气工',
+  add column if not exists scope text not null default 'level',
   add column if not exists level text not null default 'junior',
   add column if not exists category text not null default '输气工基础技术',
   add column if not exists chapter text not null default '',
@@ -183,6 +191,8 @@ create trigger questions_set_updated_at
 
 create index if not exists source_files_created_at_idx on public.source_files (created_at desc);
 create index if not exists questions_level_idx on public.questions (level);
+create index if not exists questions_scope_idx on public.questions (scope);
+create index if not exists questions_profession_scope_level_idx on public.questions (profession, scope, level);
 create index if not exists questions_level_type_idx on public.questions (level, question_type);
 create index if not exists questions_source_file_idx on public.questions (source_file_id);
 create index if not exists questions_chapter_idx on public.questions (chapter);

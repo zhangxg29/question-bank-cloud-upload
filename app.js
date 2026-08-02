@@ -19,6 +19,8 @@ const LEVELS = [
   { value: "senior_technician", label: "高级技师" },
 ];
 
+const COMMON_LEVEL_KEYS = ["common", "通用", "通用基础知识"];
+
 const QUESTION_TYPES = [
   { value: "single", label: "单选" },
   { value: "multiple", label: "多选" },
@@ -79,6 +81,7 @@ function answersEqual(left, right) {
 
 function normalizeLevel(value) {
   const text = String(value || "").trim().toLowerCase();
+  if (COMMON_LEVEL_KEYS.includes(text) || COMMON_LEVEL_KEYS.includes(String(value || "").trim())) return "common";
   const found = LEVELS.find((item) => item.value === text || item.label === value);
   return found ? found.value : "junior";
 }
@@ -136,8 +139,10 @@ function csvRowToQuestion(row) {
   const questionType = inferQuestionTypeFromCsv(row);
   return {
     level: normalizeLevel(row.level),
-    category: "CSV导入",
+    category: String(row.category || "CSV导入").trim(),
     chapter: String(row.chapter || "").trim(),
+    profession: String(row.profession || "输气工").trim(),
+    scope: String(row.scope || "").trim() || (normalizeLevel(row.level) === "common" ? "common" : "level"),
     question_type: questionType,
     question: String(row.question || "").trim(),
     stem: String(row.question || "").trim(),
@@ -189,10 +194,37 @@ function parseOptions(text) {
     .filter((item) => item.text);
 }
 
+function cleanQuestionText(text) {
+  return String(text || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function splitTheoryBlocks(text) {
   const clean = String(text || "").replace(/\r/g, "");
-  const matches = [...clean.matchAll(/(?:^|\n)\s*(\d+)[、.．]\s*@?\[T\][\s\S]*?(?=(?:\n\s*\d+[、.．]\s*@?\[T\])|(?:\n[A-Z]{2}\d{3}\b)|\s*$)/g)];
-  return matches.map((m) => m[0].trim()).filter(Boolean);
+  const lines = clean.split("\n").map((line) => line.trim()).filter(Boolean);
+  const blocks = [];
+  let current = null;
+
+  for (const line of lines) {
+    const start = line.match(/^\s*(?:\d+[、.．]\s*)?@?\[T\]([\s\S]*)$/);
+    if (start) {
+      if (current) blocks.push(current);
+      current = [start[1]];
+    } else if (current) {
+      current.push(line);
+    }
+  }
+  if (current) blocks.push(current);
+
+  return blocks.map((linesInBlock) => {
+    const block = linesInBlock.join("\n");
+    const answerMatch = block.match(/\[D\]([\s\S]*?)\[D\/\]/);
+    if (!answerMatch) return { body: block, answer: "", explanation: "" };
+    return {
+      body: block.slice(0, answerMatch.index).replace(/\[T\/\]/g, "").trim(),
+      answer: answerMatch[1].trim(),
+      explanation: block.slice(answerMatch.index + answerMatch[0].length).replace(/\[T\/\]/g, "").trim(),
+    };
+  });
 }
 
 function parseTheoryQuestions(text, level, category) {
@@ -201,37 +233,31 @@ function parseTheoryQuestions(text, level, category) {
   const logs = [];
 
   blocks.forEach((block, index) => {
-    const answerMatch = block.match(/\[D\]([\s\S]*?)\[D\/\]/);
-    if (!answerMatch) {
+    if (!block.answer) {
       logs.push(`第 ${index + 1} 题缺少答案标记`);
       return;
     }
-    const answerRaw = answerMatch[1].trim();
-    const head = block.slice(0, answerMatch.index).replace(/\[T\/\]/g, "").trim();
-    const tail = block.slice(answerMatch.index + answerMatch[0].length).trim();
-    const metaMatch = head.match(/^\s*(\d+)[、.．]\s*@?\[T\][^\n]*\n?/);
-    const body = metaMatch ? head.slice(metaMatch[0].length) : head;
-    const lines = body.split("\n").map((item) => item.trim()).filter(Boolean);
-    const stemLines = [];
-    const options = [];
-    let activeOption = null;
-
-    for (const line of lines) {
-      const optMatch = line.match(/^([A-HＡ-Ｈ])[\.\、．]\s*(.*)$/);
-      if (optMatch) {
-        activeOption = { key: optMatch[1].toUpperCase(), text: optMatch[2].trim() };
-        options.push(activeOption);
-        continue;
-      }
-      if (activeOption && /^[A-HＡ-Ｈ][\.\、．]/.test(line) === false && !/^[TＤD]/.test(line)) {
-        activeOption.text = `${activeOption.text}${activeOption.text ? " " : ""}${line}`;
-        continue;
-      }
-      stemLines.push(line);
+    let body = cleanQuestionText(block.body.replace(/^\s*\d+[、.．]\s*/, "").replace(/^@?\[T\]/, ""));
+    let chapter = "";
+    const metaMatch = body.match(/^([A-Z]{2}\d{3})\s+\d+\s+\d+\s+\d+\s*(.*)$/);
+    if (metaMatch) {
+      chapter = metaMatch[1];
+      body = metaMatch[2].trim();
     }
 
-    const stem = stemLines.join(" ").trim();
-    const answer = normalizeAnswer(answerRaw);
+    const optionMatches = [...body.matchAll(/(?<![A-Za-z])([A-HＡ-Ｈ])[\.\、．:：)]\s*/g)];
+    const options = [];
+    let stem = body;
+    if (optionMatches.length) {
+      stem = cleanQuestionText(body.slice(0, optionMatches[0].index));
+      optionMatches.forEach((match, optionIndex) => {
+        const start = match.index + match[0].length;
+        const end = optionMatches[optionIndex + 1]?.index ?? body.length;
+        options.push({ key: match[1].toUpperCase(), text: cleanQuestionText(body.slice(start, end)) });
+      });
+    }
+
+    const answer = normalizeAnswer(block.answer);
     let questionType = "single";
     if (answer.includes("√") || answer.includes("×")) {
       questionType = "judge";
@@ -251,7 +277,8 @@ function parseTheoryQuestions(text, level, category) {
       stem,
       options,
       answer,
-      explanation: tail || "",
+      chapter,
+      explanation: block.explanation || "",
     });
   });
 
@@ -320,6 +347,7 @@ function inferFolderName(files) {
 
 function inferLevelFromPath(path) {
   const text = normalizeText(path);
+  if (text.includes("通用") || text.includes("基础知识")) return "common";
   if (text.includes("高级技师")) return "senior_technician";
   if (text.includes("技师")) return "technician";
   if (text.includes("高级")) return "senior";
@@ -545,11 +573,14 @@ createApp({
     }
 
     function levelMatches(question, level) {
-      return question.level === level.value || question.level === level.label;
+      return question.scope === "common"
+        || COMMON_LEVEL_KEYS.includes(question.level)
+        || question.level === level.value
+        || question.level === level.label;
     }
 
     function levelCountKeys(level) {
-      return [...new Set([level.value, level.label].filter(Boolean))];
+      return [...new Set([level.value, level.label, ...COMMON_LEVEL_KEYS].filter(Boolean))];
     }
 
     function labelOfType(value) {
@@ -760,7 +791,8 @@ createApp({
       const category = uploadForm.value.autoDetectMeta
         ? inferCategoryFromPath(originalName, uploadForm.value.category)
         : uploadForm.value.category;
-      return { originalName, level, category };
+      const scope = level === "common" ? "common" : "level";
+      return { originalName, level, category, profession: "输气工", scope };
     }
 
     async function parseQuestionFile(file, meta) {
@@ -804,16 +836,23 @@ createApp({
         question,
         option_a,
         option_b,
-        option_c,
-        option_d,
-        analysis,
-        ...legacy
-      } = row;
+      option_c,
+      option_d,
+      analysis,
+      profession,
+      scope,
+      ...legacy
+    } = row;
       return legacy;
     }
 
     function legacyAnswerRecordPayload(row) {
       const { answer, correct, ...legacy } = row;
+      return legacy;
+    }
+
+    function legacySourceFilePayload(row) {
+      const { profession, scope, ...legacy } = row;
       return legacy;
     }
 
@@ -857,13 +896,19 @@ createApp({
     async function importQuestionFile(client, file) {
       const meta = inferImportMeta(file);
       const { originalName, parseResult } = await parseQuestionFile(file, meta);
-      const sourceInsert = await client.from("source_files").insert({
+      const sourcePayload = {
         original_name: originalName,
         level: meta.level,
         category: meta.category,
+        profession: meta.profession,
+        scope: meta.scope,
         status: "importing",
         log: "后台直灌：不上传原文件，只批量写入 Supabase 题库表。",
-      }).select().single();
+      };
+      let sourceInsert = await client.from("source_files").insert(sourcePayload).select().single();
+      if (sourceInsert.error && isSchemaColumnError(sourceInsert.error)) {
+        sourceInsert = await client.from("source_files").insert(legacySourceFilePayload(sourcePayload)).select().single();
+      }
       if (sourceInsert.error) throw sourceInsert.error;
 
       let imported = 0;
@@ -882,6 +927,8 @@ createApp({
           level: item.level,
           category: item.category,
           chapter: item.chapter || item.category || "",
+          profession: meta.profession,
+          scope: meta.scope,
           question_type: item.question_type,
           question: item.stem,
           option_a: optionA,
@@ -1174,6 +1221,8 @@ createApp({
           level: editor.value.level,
           category: editor.value.category,
           chapter: editor.value.chapter || "",
+          profession: "输气工",
+          scope: "level",
           question_type: editor.value.question_type,
           question: editor.value.stem,
           stem: editor.value.stem,

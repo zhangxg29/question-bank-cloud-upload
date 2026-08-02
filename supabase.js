@@ -42,6 +42,10 @@ function levelAliases(level) {
   return [...new Set([level, map[level]].filter(Boolean))];
 }
 
+function levelAndCommonAliases(level) {
+  return [...levelAliases(level), "common", "通用", "通用基础知识"];
+}
+
 function normalizeOptions(row) {
   if (Array.isArray(row.options) && row.options.length) return row.options;
   return [
@@ -69,6 +73,8 @@ export function normalizeQuestionRow(row) {
     analysis: row.analysis || row.explanation || "",
     question_type: inferQuestionType(row),
     chapter: row.chapter || "",
+    profession: row.profession || "输气工",
+    scope: row.scope || (["common", "通用", "通用基础知识"].includes(row.level) ? "common" : "level"),
   };
 }
 
@@ -136,7 +142,7 @@ export async function getQuestionsByLevel(level) {
   const result = await supabaseClient
     .from("questions")
     .select("*")
-    .in("level", levelAliases(level))
+    .in("level", levelAndCommonAliases(level))
     .order("id", { ascending: false });
   if (result.error) throw result.error;
   return (result.data || []).map(normalizeQuestionRow);
