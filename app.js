@@ -37,6 +37,7 @@ const EXAM_RULE = {
 };
 
 const CONFIG = window.APP_CONFIG || {};
+const AI_ANALYSIS_ENABLED = Boolean(CONFIG.aiAnalysisEndpoint);
 const CSV_REQUIRED_FIELDS = ["question", "answer", "level"];
 
 function escapeHtml(text) {
@@ -553,6 +554,19 @@ createApp({
 
     function labelOfType(value) {
       return QUESTION_TYPES.find((item) => item.value === value)?.label || value || "未知";
+    }
+
+    function buildExamPlan(singles, multiples, judges) {
+      const planned = {
+        single: Math.min(singles.length, EXAM_RULE.single),
+        multiple: Math.min(multiples.length, EXAM_RULE.multiple),
+        judge: Math.min(judges.length, EXAM_RULE.judge),
+      };
+      const total = planned.single + planned.multiple + planned.judge;
+      const full = planned.single === EXAM_RULE.single
+        && planned.multiple === EXAM_RULE.multiple
+        && planned.judge === EXAM_RULE.judge;
+      return { ...planned, total, full };
     }
 
     function formatCountdown(totalSeconds) {
@@ -1248,19 +1262,13 @@ createApp({
         const singles = levelPool.filter((item) => item.question_type === "single");
         const multiples = levelPool.filter((item) => item.question_type === "multiple");
         const judges = levelPool.filter((item) => item.question_type === "judge");
-        const shortages = [
-          ["单选", singles.length, EXAM_RULE.single],
-          ["多选", multiples.length, EXAM_RULE.multiple],
-          ["判断", judges.length, EXAM_RULE.judge],
-        ].filter(([, current, need]) => current < need);
-        if (shortages.length) {
-          throw new Error(shortages.map(([name, current, need]) => `${name}不足：需要 ${need}，当前 ${current}`).join("；"));
-        }
+        const plan = buildExamPlan(singles, multiples, judges);
+        if (!plan.total) throw new Error("当前等级还没有可用于考试的单选、多选或判断题");
 
         examQuestions.value = [
-          ...pickRandomItems(singles, EXAM_RULE.single),
-          ...pickRandomItems(multiples, EXAM_RULE.multiple),
-          ...pickRandomItems(judges, EXAM_RULE.judge),
+          ...pickRandomItems(singles, plan.single),
+          ...pickRandomItems(multiples, plan.multiple),
+          ...pickRandomItems(judges, plan.judge),
         ].sort(() => Math.random() - 0.5);
         examAnswers.value = {};
         examResult.value = null;
@@ -1275,6 +1283,9 @@ createApp({
           }
         }, 1000);
         tab.value = "exam";
+        if (!plan.full) {
+          setMessage(`当前题库数量不足正式考试，已生成 ${plan.total} 题小型练习考。正式考试规则仍为 80 单选 + 10 多选 + 10 判断。`);
+        }
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1515,6 +1526,7 @@ createApp({
       uploadStatus,
       levels: LEVELS,
       questionTypes: QUESTION_TYPES,
+      aiAnalysisEnabled: AI_ANALYSIS_ENABLED,
       uploadForm,
       sourceFiles,
       questions,

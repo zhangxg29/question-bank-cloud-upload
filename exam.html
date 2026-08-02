@@ -335,7 +335,7 @@
                   <button v-if="examForm.mode === 'memorize'" class="ghost" @click="toggleExamReveal(item.id)">
                     {{ examRevealSet.has(item.id) ? '隐藏答案' : '查看答案' }}
                   </button>
-                  <button class="ghost" @click="requestAiAnalysis(item)">AI解析</button>
+                  <button v-if="aiAnalysisEnabled" class="ghost" @click="requestAiAnalysis(item)">AI解析</button>
                 </div>
               </div>
               <button @click="submitExam">提交试卷</button>
