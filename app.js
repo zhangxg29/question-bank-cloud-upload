@@ -210,8 +210,23 @@ function cleanQuestionText(text) {
   return String(text || "").replace(/\u3000/g, " ").replace(/\s+/g, " ").trim();
 }
 
+function normalizeWordMarkers(text) {
+  return String(text || "")
+    .replace(/[［﹝]/g, "[")
+    .replace(/[］﹞]/g, "]")
+    .replace(/Ｆ/g, "F")
+    .replace(/Ｔ/g, "T")
+    .replace(/Ｄ/g, "D");
+}
+
+function normalizeOptionKey(value) {
+  return String(value || "")
+    .toUpperCase()
+    .replace(/[Ａ-Ｚ]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0));
+}
+
 function splitTheoryBlocks(text) {
-  const clean = String(text || "").replace(/\r/g, "");
+  const clean = normalizeWordMarkers(String(text || "").replace(/\r/g, ""));
   const lines = clean.split("\n").map((line) => line.trim()).filter(Boolean);
   const blocks = [];
   let current = null;
@@ -229,12 +244,23 @@ function splitTheoryBlocks(text) {
 
   return blocks.map((linesInBlock) => {
     const block = linesInBlock.join("\n");
-    const answerMatch = block.match(/\[D\]([\s\S]*?)\[D\/\]/);
-    if (!answerMatch) return { body: block, answer: "", explanation: "" };
+    const answerMatches = [...block.matchAll(/\[D\]([\s\S]*?)\[D\/\]/g)];
+    if (answerMatches.length) {
+      const answerMatch = answerMatches[answerMatches.length - 1];
+      return {
+        body: block.slice(0, answerMatch.index).replace(/\[D\]/g, "").replace(/\[T\/\]/g, "").trim(),
+        answer: answerMatch[1].trim(),
+        explanation: block.slice(answerMatch.index + answerMatch[0].length).replace(/\[T\/\]/g, "").trim(),
+      };
+    }
+
+    const markerMatches = [...block.matchAll(/\[D\]/g)];
+    if (!markerMatches.length) return { body: block, answer: "", explanation: "" };
+    const marker = markerMatches[markerMatches.length - 1];
     return {
-      body: block.slice(0, answerMatch.index).replace(/\[T\/\]/g, "").trim(),
-      answer: answerMatch[1].trim(),
-      explanation: block.slice(answerMatch.index + answerMatch[0].length).replace(/\[T\/\]/g, "").trim(),
+      body: block.slice(0, marker.index).replace(/\[D\]/g, "").replace(/\[T\/\]/g, "").trim(),
+      answer: block.slice(marker.index + marker[0].length).trim(),
+      explanation: "",
     };
   });
 }
@@ -249,13 +275,16 @@ function parseTheoryQuestions(text, level, category) {
       logs.push(`第 ${index + 1} 题缺少答案标记`);
       return;
     }
-    let body = cleanQuestionText(block.body.replace(/^\s*\d+[、.．]\s*/, "").replace(/^@?\[T\]/, ""));
+    const rawBody = normalizeWordMarkers(block.body.replace(/^\s*\d+[、.．]\s*/, "").replace(/^@?\[T\]/, ""));
+    let bodyLines = rawBody.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     let chapter = "";
-    const metaMatch = body.match(/^([A-Z]{2}\d{3})\s+\d+\s+\d+\s+\d+\s*(.*)$/);
+    const metaMatch = bodyLines[0]?.match(/^([A-Z]{2}\d{3})\s+\d+\s+\d+\s+\d+\s*(.*)$/);
     if (metaMatch) {
       chapter = metaMatch[1];
-      body = metaMatch[2].trim();
+      bodyLines = [metaMatch[2], ...bodyLines.slice(1)].filter(Boolean);
     }
+    const body = cleanQuestionText(bodyLines.join("\n").replace(/\[D\]/g, ""));
+    const answer = normalizeAnswer(block.answer);
 
     const optionMatches = [...body.matchAll(/(?<![A-Za-z])([A-HＡ-Ｈ])[\.\、．:：)]\s*/g)];
     const options = [];
@@ -265,16 +294,35 @@ function parseTheoryQuestions(text, level, category) {
       optionMatches.forEach((match, optionIndex) => {
         const start = match.index + match[0].length;
         const end = optionMatches[optionIndex + 1]?.index ?? body.length;
-        options.push({ key: match[1].toUpperCase(), text: cleanQuestionText(body.slice(start, end)) });
+        options.push({ key: normalizeOptionKey(match[1]), text: cleanQuestionText(body.slice(start, end)) });
       });
+    } else {
+      const tailLines = bodyLines
+        .slice(1)
+        .map((line) => line.replace(/^\[D\]\s*/, "").trim())
+        .filter(Boolean);
+      const numberedOptions = tailLines
+        .filter((line) => /^\d+\s*[、.)]\s*/.test(line))
+        .map((line) => line.replace(/^\d+\s*[、.)]\s*/, "").trim())
+        .filter(Boolean);
+      const inferredOptions = numberedOptions.length >= 2
+        ? numberedOptions
+        : (tailLines.length >= 3 ? tailLines : []);
+      if (inferredOptions.length >= 2 && !answer.includes("√") && !answer.includes("×")) {
+        stem = cleanQuestionText(bodyLines[0] || body);
+        inferredOptions.slice(0, 8).forEach((text, optionIndex) => {
+          options.push({ key: String.fromCharCode(65 + optionIndex), text: cleanQuestionText(text) });
+        });
+      }
     }
 
-    const answer = normalizeAnswer(block.answer);
     let questionType = "single";
     if (answer.includes("√") || answer.includes("×")) {
       questionType = "judge";
     } else if (answer.length > 1) {
       questionType = "multiple";
+    } else if (!options.length && answer.length && !/^[A-H]$/i.test(answer[0])) {
+      questionType = "practical";
     }
 
     if (!stem) {
