@@ -107,6 +107,24 @@ code {
   align-items: flex-end;
 }
 
+.profile-chip {
+  display: grid;
+  gap: 2px;
+  min-width: 118px;
+  background: #15202b;
+  color: #fff;
+  text-align: left;
+}
+
+.profile-chip span {
+  color: #cbd5e1;
+  font-size: 13px;
+}
+
+.profile-chip strong {
+  font-size: 15px;
+}
+
 .eyebrow,
 .muted {
   color: #687385;
@@ -180,6 +198,42 @@ code {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.home-grid.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.manage-grid,
+.profile-summary {
+  display: grid;
+  gap: 12px;
+}
+
+.manage-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.profile-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.profile-summary article {
+  border: 1px solid #d5dce5;
+  border-radius: 8px;
+  background: #f8fbfd;
+  padding: 14px;
+  display: grid;
+  gap: 6px;
+}
+
+.profile-summary span {
+  color: #687385;
+}
+
+.profile-summary strong {
+  font-size: 20px;
+  overflow-wrap: anywhere;
 }
 
 .home-card {
@@ -583,6 +637,10 @@ code {
   display: none;
 }
 
+.mobile-nav {
+  display: none;
+}
+
 .table-wrap {
   max-height: 280px;
   overflow: auto;
@@ -613,6 +671,8 @@ th {
   .admin-grid,
   .level-grid,
   .home-grid,
+  .manage-grid,
+  .profile-summary,
   .learning-summary,
   .form-grid,
   .import-pickers {
@@ -633,17 +693,48 @@ th {
 
 @media (max-width: 720px) {
   .app-shell {
-    padding: 12px 12px 86px;
+    padding: 10px 10px 152px;
   }
 
-  .tabs {
-    overflow-x: auto;
-    flex-wrap: nowrap;
-    padding-bottom: 4px;
+  .hero {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    margin: -10px -10px 10px;
+    padding: 10px;
+    background: rgba(244, 247, 251, 0.96);
+    border-bottom: 1px solid #d5dce5;
+    align-items: center;
   }
 
-  .tabs button {
-    flex: 0 0 auto;
+  .hero h1 {
+    font-size: 22px;
+  }
+
+  .hero .muted,
+  .hero .eyebrow,
+  .hero-stats,
+  .desktop-tabs {
+    display: none;
+  }
+
+  .profile-chip {
+    min-width: 92px;
+    padding: 8px 10px;
+  }
+
+  .panel {
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 10px;
+  }
+
+  .level-card,
+  .home-card,
+  .list-item,
+  .question-card,
+  .exam-item {
+    border-radius: 8px;
   }
 
   .practice-panel {
@@ -652,12 +743,35 @@ th {
     background: transparent;
   }
 
+  .practice-main {
+    gap: 10px;
+  }
+
+  .practice-main .section-head {
+    gap: 10px;
+  }
+
+  .practice-toolbar {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .practice-toolbar .source-filter,
+  .practice-toolbar button {
+    display: none;
+  }
+
   .practice-card,
-  .practice-panel > .stack:last-child {
+  .practice-side {
     background: #fff;
     border: 1px solid #d5dce5;
     border-radius: 8px;
     padding: 12px;
+  }
+
+  .practice-side {
+    display: none;
   }
 
   .practice-card .actions {
@@ -665,18 +779,66 @@ th {
   }
 
   .practice-card .question-stem {
-    font-size: 24px;
+    font-size: 22px;
   }
 
   .practice-card .options button {
-    font-size: 20px;
+    min-height: 58px;
+    font-size: 18px;
+    padding: 12px;
+  }
+
+  .meta {
+    gap: 6px;
+    font-size: 13px;
+  }
+
+  .meta span {
+    border-radius: 999px;
+    background: #eef3f8;
+    padding: 4px 8px;
+  }
+
+  .home-grid.compact,
+  .profile-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .mobile-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 22;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+    background: #fff;
+    border-top: 1px solid #d5dce5;
+    box-shadow: 0 -8px 24px rgba(21, 32, 43, 0.08);
+  }
+
+  .mobile-nav button {
+    min-height: 44px;
+    border-radius: 8px;
+    background: #f3f7fb;
+    color: #15202b;
+    padding: 6px 4px;
+    font-size: 14px;
+  }
+
+  .mobile-nav button.active {
+    background: #176b87;
+    color: #fff;
+    outline: 0;
   }
 
   .mobile-bottom-actions {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 0;
+    bottom: 60px;
     z-index: 20;
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

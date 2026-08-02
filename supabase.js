@@ -78,6 +78,18 @@ export function normalizeQuestionRow(row) {
   };
 }
 
+async function fetchQuestionPages(buildQuery, pageSize = 1000) {
+  const rows = [];
+  for (let from = 0; ; from += pageSize) {
+    const result = await buildQuery().range(from, from + pageSize - 1);
+    if (result.error) throw result.error;
+    const page = result.data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
+}
+
 export function getClientUserId() {
   const existing = localStorage.getItem(USER_ID_KEY);
   if (existing) return existing;
@@ -117,9 +129,8 @@ export async function resolveUserId() {
 
 export async function getQuestions() {
   if (!supabaseClient) throw new Error("请先填写 app-config.js");
-  const result = await supabaseClient.from("questions").select("*").order("id", { ascending: false });
-  if (result.error) throw result.error;
-  return (result.data || []).map(normalizeQuestionRow);
+  const rows = await fetchQuestionPages(() => supabaseClient.from("questions").select("*").order("id", { ascending: false }));
+  return rows.map(normalizeQuestionRow);
 }
 
 export async function getQuestionCount(level) {
@@ -139,13 +150,12 @@ export async function getQuestionCount(level) {
 
 export async function getQuestionsByLevel(level) {
   if (!supabaseClient) throw new Error("请先填写 app-config.js");
-  const result = await supabaseClient
+  const rows = await fetchQuestionPages(() => supabaseClient
     .from("questions")
     .select("*")
     .in("level", levelAndCommonAliases(level))
-    .order("id", { ascending: false });
-  if (result.error) throw result.error;
-  return (result.data || []).map(normalizeQuestionRow);
+    .order("id", { ascending: false }));
+  return rows.map(normalizeQuestionRow);
 }
 
 export async function getRandomQuestions(number = 100) {

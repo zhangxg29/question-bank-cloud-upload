@@ -41,6 +41,8 @@ const EXAM_RULE = {
 const CONFIG = window.APP_CONFIG || {};
 const AI_ANALYSIS_ENABLED = Boolean(CONFIG.aiAnalysisEndpoint);
 const CSV_REQUIRED_FIELDS = ["question", "answer", "level"];
+const USER_ID_KEY = "question_bank_user_id";
+const PROFILE_NAME_KEY = "question_bank_profile_name";
 
 function escapeHtml(text) {
   return String(text || "")
@@ -175,6 +177,16 @@ function makeFingerprint(question) {
   return crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload)).then((buf) =>
     [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("")
   );
+}
+
+async function makeProfileId(name, pin) {
+  const payload = `question-bank-profile:${String(name || "").trim()}:${String(pin || "").trim()}`;
+  const buffer = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+  const hex = [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((parseInt(hex[16], 16) & 3) | 8).toString(16);
+  const id = hex.join("");
+  return `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20, 32)}`;
 }
 
 function fileExt(name) {
@@ -375,6 +387,8 @@ createApp({
     const ready = ref(Boolean(hasSupabaseConfig && supabase));
     const tab = ref(window.INITIAL_TAB || "home");
     const userId = ref("");
+    const profileName = ref(localStorage.getItem(PROFILE_NAME_KEY) || "");
+    const profileForm = ref({ name: profileName.value, pin: "" });
     const message = ref("");
     const error = ref("");
     const uploadStatus = ref({ state: "idle", title: "", detail: "" });
@@ -650,9 +664,51 @@ createApp({
     async function ensureProfile(client) {
       const result = await client.from("profiles").upsert({
         id: userId.value,
-        username: `用户${userId.value.slice(0, 8)}`,
+        username: profileName.value || `用户${userId.value.slice(0, 8)}`,
       }, { onConflict: "id" });
       if (result.error) throw result.error;
+    }
+
+    function fillCurrentProfile() {
+      profileForm.value = {
+        name: profileName.value || "",
+        pin: "",
+      };
+    }
+
+    async function loginProfile() {
+      try {
+        const name = profileForm.value.name.trim();
+        const pin = profileForm.value.pin.trim();
+        if (!name) throw new Error("请输入显示名称");
+        if (pin.length < 4) throw new Error("口令至少 4 位，用来在不同手机上回到同一个个人记录");
+        const id = await makeProfileId(name, pin);
+        localStorage.setItem(USER_ID_KEY, id);
+        localStorage.setItem(PROFILE_NAME_KEY, name);
+        userId.value = id;
+        profileName.value = name;
+        profileForm.value.pin = "";
+        setMessage(`已登录：${name}`);
+        tab.value = "practice";
+        await loadAll();
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    async function logoutProfile() {
+      try {
+        localStorage.removeItem(USER_ID_KEY);
+        localStorage.removeItem(PROFILE_NAME_KEY);
+        profileName.value = "";
+        profileForm.value = { name: "", pin: "" };
+        userId.value = await resolveUserId();
+        await loadAll();
+        setMessage("已退出个人档案，当前使用本机临时档案。");
+        tab.value = "profile";
+      } catch (err) {
+        setError(err.message || String(err));
+      }
     }
 
     function updateDashboardProgress() {
@@ -1570,6 +1626,8 @@ createApp({
       ready,
       tab,
       userId,
+      profileName,
+      profileForm,
       message,
       error,
       uploadStatus,
@@ -1619,6 +1677,9 @@ createApp({
       sourceName,
       labelOfLevel: labelOfLevelLocal,
       labelOfType,
+      fillCurrentProfile,
+      loginProfile,
+      logoutProfile,
       onPickUploadFile,
       onPickUploadFolder,
       uploadAndParse,
