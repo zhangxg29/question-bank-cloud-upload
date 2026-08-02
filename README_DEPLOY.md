@@ -33,7 +33,7 @@
 - Mock exams use theory questions only: 80 single choice, 10 multiple choice, 10 judge.
 - Each question is 1 point, total 100 points, passing score 60, duration 60 minutes.
 - Practical questions stay in practice/memorize mode and are excluded from mock exams.
-- `aiAnalysisEndpoint` in `app-config.js` is reserved for AI explanations.
+- `aiAnalysisEndpoint` in `app-config.js` is currently blank because AI explanations are paused.
 
 ## 3. 发到 Netlify
 
@@ -69,6 +69,8 @@
 - `questions`
 - `answer_records`
 - `favorites`
+- `exam_records`
+- `chapters`
 
 并开启最简单的公开读写策略，适合起步和演示。
 

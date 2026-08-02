@@ -75,6 +75,10 @@ window.APP_CONFIG = {
 - `questions`
 - `answer_records`
 - `favorites`
+- `exam_records`
+- `chapters`
+
+当前 AI 解析暂停，`app-config.js` 里的 `aiAnalysisEndpoint` 保持空字符串即可。
 
 ## 7. 常见检查项
 

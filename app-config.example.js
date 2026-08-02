@@ -3,5 +3,5 @@ window.APP_CONFIG = {
   supabaseAnonKey: "YOUR_SUPABASE_ANON_KEY",
   bucket: "question-files",
   useAnonymousAuth: false,
-  aiAnalysisEndpoint: "/api/ai-analysis",
+  aiAnalysisEndpoint: "",
 };
