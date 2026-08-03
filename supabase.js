@@ -1,8 +1,44 @@
 import { createClient } from "./vendor/supabase.mjs";
 
 const CONFIG = window.APP_CONFIG || {};
-const QUESTION_CACHE_KEY = "question_bank_questions_v1";
+const QUESTION_DB_NAME = "question_bank_db";
+const QUESTION_DB_VERSION = 1;
+const QUESTION_STORE = "questions";
 const QUESTION_CACHE_TTL_MS = 10 * 60 * 1000;
+
+function openQuestionDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(QUESTION_DB_NAME, QUESTION_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(QUESTION_STORE)) {
+        db.createObjectStore(QUESTION_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function idbGet(key) {
+  const db = await openQuestionDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(QUESTION_STORE, "readonly");
+    const req = tx.objectStore(QUESTION_STORE).get(key);
+    req.onsuccess = () => resolve(req.result ?? null);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function idbSet(key, value) {
+  const db = await openQuestionDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(QUESTION_STORE, "readwrite");
+    tx.objectStore(QUESTION_STORE).put(value, key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
 
 export const hasSupabaseConfig = Boolean(CONFIG.supabaseUrl && CONFIG.supabaseAnonKey);
 export const supabaseClient = hasSupabaseConfig
@@ -76,6 +112,25 @@ export async function signInWithPassword(email, password) {
   return supabaseClient.auth.signInWithPassword({ email, password });
 }
 
+export async function signUpWithPhone(phone, password, displayName) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  return supabaseClient.auth.signUp({
+    phone,
+    password,
+    options: {
+      data: {
+        display_name: displayName,
+        full_name: displayName,
+      },
+    },
+  });
+}
+
+export async function signInWithPhone(phone, password) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  return supabaseClient.auth.signInWithPassword({ phone, password });
+}
+
 export async function signUpWithPassword(email, password, displayName) {
   if (!supabaseClient) throw new Error("请先填写 app-config.js");
   return supabaseClient.auth.signUp({
@@ -121,24 +176,97 @@ export async function getQuestions() {
 export async function getQuestionsCached({ force = false, ttlMs = QUESTION_CACHE_TTL_MS } = {}) {
   if (!force) {
     try {
-      const raw = localStorage.getItem(QUESTION_CACHE_KEY);
-      if (raw) {
-        const cached = JSON.parse(raw);
-        if (cached && Array.isArray(cached.data) && Date.now() - (cached.savedAt || 0) < ttlMs) {
-          return cached.data;
-        }
+      const cached = await idbGet("questions");
+      if (cached && Array.isArray(cached.data) && Date.now() - (cached.savedAt || 0) < ttlMs) {
+        return cached.data;
       }
     } catch (err) {
       console.warn("题库缓存读取失败，将重新拉取", err);
     }
   }
-  const rows = await getQuestions();
   try {
-    localStorage.setItem(QUESTION_CACHE_KEY, JSON.stringify({ savedAt: Date.now(), data: rows }));
+    const rows = await getQuestions();
+    try {
+      await idbSet("questions", { savedAt: Date.now(), data: rows });
+    } catch (err) {
+      console.warn("题库缓存写入失败（继续使用网络数据）", err);
+    }
+    return rows;
   } catch (err) {
-    console.warn("题库缓存写入失败（可能超出 localStorage 容量，继续使用网络数据）", err);
+    // 网络不可用时回退到任意旧缓存，保证离线能刷题
+    try {
+      const cached = await idbGet("questions");
+      if (cached && Array.isArray(cached.data) && cached.data.length) {
+        console.warn("网络不可用，使用本地题库缓存（离线模式）", err);
+        return cached.data;
+      }
+    } catch (err2) {
+      // ignore
+    }
+    throw err;
   }
-  return rows;
+}
+
+export async function getLocalBankVersion() {
+  try {
+    return (await idbGet("bank_version")) || "";
+  } catch (err) {
+    return "";
+  }
+}
+
+export async function setLocalBankVersion(value) {
+  try {
+    await idbSet("bank_version", String(value || ""));
+  } catch (err) {
+    // ignore
+  }
+}
+
+export async function getBankVersion() {
+  if (!supabaseClient) return "";
+  const result = await supabaseClient.from("app_meta").select("value").eq("key", "bank_version").maybeSingle();
+  if (result.error) return "";
+  return result.data?.value || "";
+}
+
+export async function setBankVersion(value) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  const result = await supabaseClient.from("app_meta").upsert(
+    { key: "bank_version", value: String(value) },
+    { onConflict: "key" }
+  );
+  if (result.error) throw result.error;
+  return result;
+}
+
+export async function addQuestionFeedback(questionId, message) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  const userId = await resolveUserId();
+  const result = await supabaseClient.from("question_feedback").insert({
+    question_id: questionId,
+    user_id: userId,
+    message,
+    status: "pending",
+  });
+  if (result.error) throw result.error;
+  return result;
+}
+
+export async function getQuestionFeedback(status = "pending") {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  let query = supabaseClient.from("question_feedback").select("*").order("created_at", { ascending: false });
+  if (status) query = query.eq("status", status);
+  const result = await query;
+  if (result.error) throw result.error;
+  return result.data || [];
+}
+
+export async function updateFeedbackStatus(id, status) {
+  if (!supabaseClient) throw new Error("请先填写 app-config.js");
+  const result = await supabaseClient.from("question_feedback").update({ status }).eq("id", id);
+  if (result.error) throw result.error;
+  return result;
 }
 
 export async function getQuestionCount(level, types = null) {

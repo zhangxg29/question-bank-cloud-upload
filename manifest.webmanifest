@@ -1,0 +1,17 @@
+{
+  "name": "输气工刷题系统",
+  "short_name": "输气刷题",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f3f7fb",
+  "theme_color": "#2f6fed",
+  "description": "输气工职业技能考试刷题系统",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

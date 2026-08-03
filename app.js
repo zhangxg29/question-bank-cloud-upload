@@ -1,8 +1,17 @@
 import {
+  addQuestionFeedback,
+  getBankVersion,
   getQuestionCount,
+  getQuestionFeedback,
   getQuestions,
   getQuestionsCached,
+  getLocalBankVersion,
   getRandomQuestionsByLevel,
+  setBankVersion,
+  setLocalBankVersion,
+  signInWithPhone,
+  signUpWithPhone,
+  updateFeedbackStatus,
   getCurrentAuthUser,
   hasSupabaseConfig,
   normalizeQuestionRow,
@@ -437,7 +446,10 @@ createApp({
       name: "",
       email: localStorage.getItem(AUTH_EMAIL_KEY) || "",
       password: "",
+      phone: "",
     });
+    const authMode = ref("email");
+    const userRole = ref("");
     const message = ref("");
     const error = ref("");
     const uploadStatus = ref({ state: "idle", title: "", detail: "" });
@@ -461,6 +473,19 @@ createApp({
     const practiceFilter = ref({ level: "", type: "", source_file_id: "", search: "", favoritesOnly: false });
     const wrongFilter = ref({ level: "", type: "", search: "" });
     const practiceItems = ref([]);
+    const practiceMode = ref("practice");
+    const feedbackOpen = ref(null);
+    const feedbackMessage = ref("");
+    const feedbackList = ref([]);
+    const feedbackFilter = ref("pending");
+    const rosterRows = ref([]);
+    const rosterTeamFilter = ref("");
+    const rosterTeams = computed(() => [...new Set(rosterRows.value.map((r) => r.team).filter(Boolean))]);
+    const isAdmin = ref(false);
+    const profileMap = ref({});
+    const bankVersionServer = ref("");
+    const bankVersionLocal = ref("");
+    const versionNotice = ref(false);
     const examForm = ref({ level: "junior", mode: "answer" });
     const examQuestions = ref([]);
     const examAnswers = ref({});
@@ -610,11 +635,15 @@ createApp({
       if (uploadStatus.value.state !== "running") return "写入后台题库";
       return uploadStatus.value.title || "正在写入后台题库";
     });
-    const wrongQuestionIds = computed(
-      () => new Set(answerRecords.value.filter((item) => item.is_correct === false).map((item) => item.question_id))
-    );
+    const wrongCounts = computed(() => {
+      const map = {};
+      answerRecords.value.forEach((item) => {
+        if (item.is_correct === false) map[item.question_id] = (map[item.question_id] || 0) + 1;
+      });
+      return map;
+    });
     const wrongQuestions = computed(() => {
-      let list = questions.value.filter((item) => wrongQuestionIds.value.has(item.id));
+      let list = questions.value.filter((item) => (wrongCounts.value[item.id] || 0) > 0);
       if (wrongFilter.value.level) {
         const level = LEVELS.find((item) => item.value === wrongFilter.value.level);
         list = level ? list.filter((item) => levelMatches(item, level)) : list.filter((item) => item.level === wrongFilter.value.level);
@@ -624,7 +653,7 @@ createApp({
         const keyword = wrongFilter.value.search.toLowerCase();
         list = list.filter((item) => `${item.stem} ${item.explanation || ""}`.toLowerCase().includes(keyword));
       }
-      return list;
+      return [...list].sort((a, b) => (wrongCounts.value[b.id] || 0) - (wrongCounts.value[a.id] || 0));
     });
     const examCountdown = computed(() => formatCountdown(examSecondsLeft.value));
 
@@ -730,9 +759,21 @@ createApp({
       authMetaName.value = user?.user_metadata?.display_name
         || user?.user_metadata?.full_name
         || "";
+      const directoryName = (CONFIG.phoneDirectory || {})[user?.phone];
+      if (directoryName) authMetaName.value = directoryName;
       if (authEmail.value) {
         localStorage.setItem(AUTH_EMAIL_KEY, authEmail.value);
         profileForm.value.email = authEmail.value;
+      }
+      if (userId.value && supabaseClient) {
+        try {
+          const adminCheck = await supabaseClient.rpc("is_admin");
+          userRole.value = adminCheck.data ? "站长" : "操作工";
+        } catch (err) {
+          userRole.value = "";
+        }
+      } else {
+        userRole.value = "";
       }
       return user;
     }
@@ -816,6 +857,61 @@ createApp({
       }
     }
 
+    async function phoneSignUp() {
+      try {
+        const client = await ensureClient();
+        const phone = profileForm.value.phone.trim();
+        const password = profileForm.value.password.trim();
+        const name = profileForm.value.name.trim();
+        if (!/^1\d{10}$/.test(phone)) throw new Error("请输入正确的 11 位手机号");
+        if (password.length < 6) throw new Error("密码至少 6 位");
+        const result = await signUpWithPhone(phone, password, name || phone);
+        if (result.error) throw result.error;
+        if (result.data?.user && result.data.user.identities && result.data.user.identities.length === 0) {
+          setMessage("该手机号已注册，请直接登录。");
+          return;
+        }
+        profileForm.value.password = "";
+        await syncAuthState();
+        if (userId.value) {
+          await ensureProfile(client);
+          setMessage("注册并登录成功。");
+          tab.value = "practice";
+        } else {
+          setMessage("注册成功，请检查手机号确认设置后登录。");
+          tab.value = "profile";
+        }
+        await loadAll();
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    async function phoneSignIn() {
+      try {
+        const client = await ensureClient();
+        const phone = profileForm.value.phone.trim();
+        const password = profileForm.value.password.trim();
+        if (!/^1\d{10}$/.test(phone)) throw new Error("请输入正确的 11 位手机号");
+        if (!password) throw new Error("请输入密码");
+        const result = await signInWithPhone(phone, password);
+        if (result.error) throw result.error;
+        profileForm.value.password = "";
+        await syncAuthState();
+        if (userId.value) {
+          await ensureProfile(client);
+          setMessage(`已登录：${profileName.value || phone}`);
+          tab.value = "practice";
+        } else {
+          setMessage("登录未完成，请稍后重试。");
+          tab.value = "profile";
+        }
+        await loadAll();
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
     async function logoutProfile() {
       try {
         const result = await signOutUser();
@@ -824,11 +920,13 @@ createApp({
         profileUsername.value = "";
         authEmail.value = "";
         userId.value = "";
+        userRole.value = "";
         profileForm.value = {
           mode: "sign_in",
           name: "",
           email: localStorage.getItem(AUTH_EMAIL_KEY) || "",
           password: "",
+          phone: "",
         };
         await loadAll();
         setMessage("已退出登录。题库仍可浏览，收藏、答题记录和考试记录需登录后保存。");
@@ -931,6 +1029,15 @@ createApp({
       }));
       chapters.value = chapterResult.data || [];
       examRecords.value = examRecordResult.data || [];
+
+      const [serverV, localV] = await Promise.all([getBankVersion(), getLocalBankVersion()]);
+      bankVersionServer.value = serverV;
+      bankVersionLocal.value = localV;
+      if (serverV && !localV) {
+        await setLocalBankVersion(serverV);
+        bankVersionLocal.value = serverV;
+      }
+      versionNotice.value = Boolean(serverV && localV && serverV !== localV);
 
       refreshStatsLocal();
     }
@@ -1192,6 +1299,7 @@ createApp({
         uploadForm.value.folderName = "";
         uploadForm.value.skippedCount = 0;
         await loadAll(true);
+        bumpBankVersion();
       } catch (err) {
         setUploadStatus("failed", "保存失败", err.message || String(err));
         setError(err.message || String(err));
@@ -1207,8 +1315,9 @@ createApp({
       return copy;
     }
 
-    function buildPracticeItems() {
-      practiceItems.value = shuffleArray(visibleQuestions.value).map((question) => ({
+    function buildPracticeItems(list = null) {
+      const source = list || (practiceMode.value === "wrong" ? wrongQuestions.value : visibleQuestions.value);
+      practiceItems.value = shuffleArray(source).map((question) => ({
         question,
         selected: [],
         practicalText: "",
@@ -1227,6 +1336,19 @@ createApp({
     function shuffleQuestions() {
       practiceFilter.value.order = practiceFilter.value.order === "random" ? "newest" : "random";
       buildPracticeItems();
+    }
+
+    function startWrongRetry() {
+      practiceMode.value = "wrong";
+      buildPracticeItems(wrongQuestions.value);
+      tab.value = "practice";
+      setMessage(`错题重练模式：共 ${wrongQuestions.value.length} 题，答对自动移出错题集。`);
+    }
+
+    function exitWrongRetry() {
+      practiceMode.value = "practice";
+      buildPracticeItems();
+      tab.value = "practice";
     }
 
     function loadIntoPractice(item) {
@@ -1292,6 +1414,164 @@ createApp({
       }
     }
 
+    function openFeedback(question) {
+      feedbackOpen.value = question.id;
+      feedbackMessage.value = "";
+    }
+
+    function closeFeedback() {
+      feedbackOpen.value = null;
+      feedbackMessage.value = "";
+    }
+
+    async function submitFeedback() {
+      try {
+        const message = feedbackMessage.value.trim();
+        if (!feedbackOpen.value || !message) throw new Error("请填写问题描述");
+        await addQuestionFeedback(feedbackOpen.value, message);
+        feedbackOpen.value = null;
+        feedbackMessage.value = "";
+        setMessage("已提交反馈，管理员会审核修正题目。");
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    async function loadFeedback() {
+      try {
+        const client = await ensureClient();
+        await requireSignedIn();
+        const adminCheck = await client.rpc("is_admin");
+        isAdmin.value = Boolean(adminCheck.data);
+        if (!isAdmin.value) {
+          feedbackList.value = [];
+          return;
+        }
+        const list = await getQuestionFeedback(feedbackFilter.value || null);
+        feedbackList.value = list.map((item) => ({
+          ...item,
+          stem: questions.value.find((q) => String(q.id) === String(item.question_id))?.stem || "（题目已删除）",
+          submitter: profileMap.value[item.user_id] || "未知用户",
+          dateText: item.created_at ? new Date(item.created_at).toLocaleString("zh-CN") : "",
+        }));
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    async function markFeedback(id, status) {
+      try {
+        await updateFeedbackStatus(id, status);
+        await loadFeedback();
+        setMessage(status === "fixed" ? "已标记为已处理" : "已忽略");
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    async function loadRoster() {
+      try {
+        const client = await ensureClient();
+        await requireSignedIn();
+        const adminCheck = await client.rpc("is_admin");
+        isAdmin.value = Boolean(adminCheck.data);
+        if (!isAdmin.value) {
+          setError("只有管理员可以查看学习看板。");
+          return;
+        }
+        const [profilesResult, recordsResult, examsResult, favsResult] = await Promise.all([
+          client.from("profiles").select("*").order("username"),
+          client.from("answer_records").select("*"),
+          client.from("exam_records").select("*").order("created_at", { ascending: false }),
+          client.from("favorites").select("user_id"),
+        ]);
+        if (profilesResult.error) throw profilesResult.error;
+        if (recordsResult.error) throw recordsResult.error;
+        if (examsResult.error) throw examsResult.error;
+        if (favsResult.error) throw favsResult.error;
+        const profiles = profilesResult.data || [];
+        const records = recordsResult.data || [];
+        const exams = examsResult.data || [];
+        const favs = favsResult.data || [];
+        profileMap.value = Object.fromEntries(profiles.map((p) => [p.id, p.username || "未设置"]));
+        rosterRows.value = profiles.map((p) => {
+          const userRecords = records.filter((r) => r.user_id === p.id);
+          const auto = userRecords.filter((r) => r.is_correct === true || r.is_correct === false);
+          const correct = auto.filter((r) => r.is_correct === true).length;
+          const userExams = exams.filter((e) => e.user_id === p.id);
+          const avgScore = userExams.length ? Math.round(userExams.reduce((s, e) => s + e.score, 0) / userExams.length) : null;
+          return {
+            user_id: p.id,
+            name: p.username || "未设置",
+            team: p.team || "",
+            done: new Set(userRecords.map((r) => r.question_id)).size,
+            correctRate: auto.length ? Math.round((correct / auto.length) * 100) : 0,
+            wrong: new Set(userRecords.filter((r) => r.is_correct === false).map((r) => r.question_id)).size,
+            favorites: favs.filter((f) => f.user_id === p.id).length,
+            examCount: userExams.length,
+            avgScore,
+            lastExam: userExams[0]?.created_at ? new Date(userExams[0].created_at).toLocaleString("zh-CN") : "",
+          };
+        });
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    function filteredRosterRows() {
+      if (!rosterTeamFilter.value) return rosterRows.value;
+      return rosterRows.value.filter((r) => r.team === rosterTeamFilter.value);
+    }
+
+    async function saveTeam(row) {
+      try {
+        const client = await ensureClient();
+        await requireSignedIn();
+        const result = await client.from("profiles").update({ team: row.team }).eq("id", row.user_id);
+        if (result.error) throw result.error;
+        setMessage("班组已更新");
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    function exportRoster() {
+      const rows = filteredRosterRows();
+      if (!rows.length) {
+        setError("没有可导出的数据");
+        return;
+      }
+      const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const header = ["姓名", "班组", "做题数", "正确率%", "错题数", "收藏", "考试次数", "平均分", "最近考试"];
+      const lines = [header.join(",")];
+      rows.forEach((r) => lines.push([r.name, r.team, r.done, r.correctRate, r.wrong, r.favorites, r.examCount, r.avgScore ?? "", r.lastExam].map(esc).join(",")));
+      const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "学习看板.csv";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      setMessage("已导出 CSV，可直接用 Excel 打开。");
+    }
+
+    async function syncBankVersion() {
+      try {
+        await loadAll(true);
+        await setLocalBankVersion(bankVersionServer.value);
+        bankVersionLocal.value = bankVersionServer.value;
+        versionNotice.value = false;
+        setMessage("题库已同步到最新版本。");
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
+    function bumpBankVersion() {
+      const next = String(Date.now());
+      setBankVersion(next).catch(() => {});
+      setLocalBankVersion(next).catch(() => {});
+    }
+
     async function submitPracticeItem(item) {
       if (item.submitted) return;
       try {
@@ -1330,6 +1610,25 @@ createApp({
         }
         item.submitted = true;
         const questionId = question.id;
+        if (item.isCorrect === true) {
+          const delResult = await client
+            .from("answer_records")
+            .delete()
+            .eq("question_id", questionId)
+            .eq("user_id", userId.value)
+            .eq("is_correct", false);
+          if (delResult.error) throw delResult.error;
+          answerRecords.value = answerRecords.value.filter(
+            (record) => !(record.question_id === questionId && record.is_correct === false)
+          );
+          if (practiceMode.value === "wrong") {
+            if (wrongQuestions.value.length === 0) {
+              setMessage("错题已全部清零，干得漂亮！");
+            } else {
+              setMessage("答对了，已移出错题集！");
+            }
+          }
+        }
         const submittedValue = question.question_type === "practical"
           ? normalizeAnswer(item.practicalText)
           : normalizeAnswer(item.selected);
@@ -1434,6 +1733,7 @@ createApp({
         setMessage(editingId.value ? "题目已更新" : "题目已保存");
         clearEditor();
         await loadAll(true);
+        bumpBankVersion();
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1447,6 +1747,7 @@ createApp({
         const result = await client.from("questions").delete().eq("id", item.id);
         if (result.error) throw result.error;
         await loadAll(true);
+        bumpBankVersion();
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1673,6 +1974,7 @@ createApp({
         csvImport.value = { ...csvImport.value, imported: result.inserted };
         setMessage(`CSV导入完成：新增 ${result.inserted} 题，重复 ${result.duplicateOrSkipped} 题。`);
         await loadAll(true);
+        bumpBankVersion();
       } catch (err) {
         setError(err.message || String(err));
       }
@@ -1743,10 +2045,24 @@ createApp({
     onMounted(async () => {
       try {
         await loadDashboard();
+      } catch (err) {
+        console.warn("离线模式：无法读取题库数量", err);
+      }
+      try {
         await loadAll();
       } catch (err) {
-        ready.value = false;
-        setError(err.message || String(err));
+        console.warn("离线模式：使用本地题库缓存", err);
+        try {
+          questions.value = await getQuestionsCached({ ttlMs: Number.MAX_SAFE_INTEGER });
+          refreshStatsLocal();
+        } catch (err2) {
+          setError("无法连接服务器，且本机没有题库缓存。");
+        }
+      }
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./sw.js").catch((err) => {
+          console.warn("Service Worker 注册失败", err);
+        });
       }
     });
 
@@ -1756,6 +2072,10 @@ createApp({
       userId,
       profileName,
       profileForm,
+      authMode,
+      userRole,
+      phoneSignUp,
+      phoneSignIn,
       message,
       error,
       uploadStatus,
@@ -1778,6 +2098,29 @@ createApp({
       visibleQuestions,
       wrongQuestions,
       practiceItems,
+      practiceMode,
+      startWrongRetry,
+      exitWrongRetry,
+      wrongCounts,
+      feedbackOpen,
+      feedbackMessage,
+      feedbackList,
+      feedbackFilter,
+      openFeedback,
+      closeFeedback,
+      submitFeedback,
+      loadFeedback,
+      markFeedback,
+      rosterRows,
+      rosterTeamFilter,
+      rosterTeams,
+      loadRoster,
+      saveTeam,
+      exportRoster,
+      filteredRosterRows,
+      isAdmin,
+      versionNotice,
+      syncBankVersion,
       examForm,
       examRule: EXAM_RULE,
       examQuestions,

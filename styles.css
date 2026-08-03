@@ -509,6 +509,88 @@ code {
   margin-right: 4px;
 }
 
+.version-notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.version-notice button {
+  margin-left: auto;
+}
+
+.retry-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #fde8e8;
+  color: #c0392b;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.feedback-form {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #d5dce5;
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+
+.feedback-form textarea {
+  width: 100%;
+  min-height: 64px;
+  margin-top: 6px;
+}
+
+.roster-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.roster-table th,
+.roster-table td {
+  border: 1px solid #d5dce5;
+  padding: 8px;
+  text-align: left;
+}
+
+.roster-table th {
+  background: #f3f7fb;
+}
+
+.team-input {
+  width: 90px;
+  padding: 4px 6px;
+  border: 1px solid #d5dce5;
+  border-radius: 6px;
+}
+
+.feedback-item p {
+  margin: 4px 0;
+}
+
+.mode-switch {
+  margin-bottom: 10px;
+}
+
+.mode-switch .active {
+  background: #e8f0fe;
+  color: #2f6fed;
+  border-color: #2f6fed;
+}
+
 .list-item,
 .question-card,
 .exam-item {
@@ -820,7 +902,8 @@ th {
   }
 
   .practice-card .actions {
-    display: none;
+    display: flex;
+    flex-wrap: wrap;
   }
 
   .practice-card .question-stem {

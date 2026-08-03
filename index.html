@@ -4,7 +4,14 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>输气工刷题系统</title>
-    <link rel="stylesheet" href="./styles.css?v=20260802-unified" />
+    <meta name="theme-color" content="#2f6fed" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/icon.svg" />
+    <link rel="stylesheet" href="./styles.css?v=20260802-v4" />
     <script src="./vendor/vue.global.prod.js"></script>
     <script src="./vendor/mammoth.browser.min.js"></script>
     <script>
@@ -47,11 +54,16 @@
           <button :class="{ active: tab === 'exam' }" @click="tab = 'exam'">模拟考试</button>
           <button :class="{ active: tab === 'wrong' }" @click="tab = 'wrong'">错题集</button>
           <button :class="{ active: tab === 'profile' }" @click="tab = 'profile'">个人</button>
-          <button :class="{ active: ['learning', 'upload', 'admin', 'docs', 'manage'].includes(tab) }" @click="tab = 'manage'">管理</button>
+          <button :class="{ active: ['learning', 'upload', 'admin', 'docs', 'roster', 'review', 'manage'].includes(tab) }" @click="tab = 'manage'">管理</button>
         </section>
 
         <section v-if="message" class="panel success">{{ message }}</section>
         <section v-if="error" class="panel error">{{ error }}</section>
+        <section v-if="versionNotice" class="panel notice version-notice">
+          <strong>题库已更新</strong>
+          <p>题库内容有更新，点击同步获取最新题目。</p>
+          <button @click="syncBankVersion">立即同步</button>
+        </section>
 
         <section v-show="tab === 'home'" class="panel stack">
           <div class="section-head">
@@ -107,7 +119,11 @@
               <h2>个人登录</h2>
               <button class="ghost" @click="fillCurrentProfile">使用当前档案</button>
             </div>
-            <div class="form-grid profile-grid">
+            <div class="actions mode-switch">
+              <button class="ghost" :class="{ active: authMode === 'email' }" @click="authMode = 'email'">邮箱登录</button>
+              <button class="ghost" :class="{ active: authMode === 'phone' }" @click="authMode = 'phone'">手机号登录</button>
+            </div>
+            <div v-if="authMode === 'email'" class="form-grid profile-grid">
               <label>
                 姓名
                 <input v-model.trim="profileForm.name" type="text" autocomplete="name" placeholder="注册后显示的名字" />
@@ -121,8 +137,32 @@
                 <input v-model.trim="profileForm.password" type="password" autocomplete="current-password" placeholder="至少 6 位字符" />
               </label>
             </div>
-            <div class="actions">
+            <div v-if="authMode === 'email'" class="actions">
               <button @click="loginProfile">{{ profileForm.mode === 'sign_up' ? '注册账号' : '登录' }}</button>
+              <button class="ghost" @click="profileForm.mode = profileForm.mode === 'sign_up' ? 'sign_in' : 'sign_up'">
+                {{ profileForm.mode === 'sign_up' ? '已有账号，去登录' : '没有账号，去注册' }}
+              </button>
+              <button class="ghost" @click="logoutProfile">退出登录</button>
+              <button v-if="userId" class="ghost" @click="saveProfileName">保存姓名</button>
+            </div>
+            <div v-if="authMode === 'phone'" class="form-grid profile-grid">
+              <label>
+                姓名
+                <input v-model.trim="profileForm.name" type="text" autocomplete="name" placeholder="注册时填写，之后可改" />
+              </label>
+              <label>
+                手机号
+                <input v-model.trim="profileForm.phone" type="tel" maxlength="11" placeholder="11 位手机号" />
+              </label>
+              <label>
+                密码
+                <input v-model.trim="profileForm.password" type="password" autocomplete="current-password" placeholder="至少 6 位字符" />
+              </label>
+            </div>
+            <div v-if="authMode === 'phone'" class="actions">
+              <button @click="profileForm.mode === 'sign_up' ? phoneSignUp() : phoneSignIn()">
+                {{ profileForm.mode === 'sign_up' ? '手机号注册' : '手机号登录' }}
+              </button>
               <button class="ghost" @click="profileForm.mode = profileForm.mode === 'sign_up' ? 'sign_in' : 'sign_up'">
                 {{ profileForm.mode === 'sign_up' ? '已有账号，去登录' : '没有账号，去注册' }}
               </button>
@@ -135,8 +175,8 @@
                 <strong>{{ profileName || '未登录' }}</strong>
               </article>
               <article>
-                <span>档案 ID</span>
-                <strong>{{ userId ? userId.slice(0, 8) : '--' }}</strong>
+                <span>档案身份</span>
+                <strong>{{ userId ? (userRole || '--') : '--' }}</strong>
               </article>
               <article>
                 <span>学习记录</span>
@@ -185,6 +225,18 @@
               <strong>题目 / 章节</strong>
               <p class="muted">新增、编辑、删除题目和章节。</p>
               <button @click="tab = 'admin'">进入后台</button>
+            </article>
+            <article class="home-card">
+              <span>学习看板</span>
+              <strong>成员统计</strong>
+              <p class="muted">每人做题量、正确率、考试成绩，可导出 Excel。</p>
+              <button @click="tab = 'roster'">查看看板</button>
+            </article>
+            <article class="home-card">
+              <span>纠错审核</span>
+              <strong>题目反馈</strong>
+              <p class="muted">学员反馈的错题、错答案，审核后修正。</p>
+              <button @click="tab = 'review'">进入审核</button>
             </article>
             <article class="home-card">
               <span>学习中心</span>
@@ -282,6 +334,13 @@
               <button class="ghost" @click="shuffleQuestions">随机</button>
             </div>
           </div>
+          <div v-if="practiceMode === 'wrong'" class="panel notice retry-banner">
+            <div>
+              <strong>错题重练模式：共 {{ wrongQuestions.length }} 题</strong>
+              <p class="muted">答对会自动移出错题集，全部清空即完成重练。</p>
+            </div>
+            <button class="ghost" @click="exitWrongRetry">退出重练</button>
+          </div>
           <div class="practice-items">
             <article
               v-for="(item, index) in practiceItems"
@@ -324,11 +383,20 @@
                 <button class="ghost" @click="toggleFavorite(item.question)">
                   {{ favoriteSet.has(item.question.id) ? '取消收藏' : '收藏' }}
                 </button>
+                <button class="ghost" @click="openFeedback(item.question)">题目有误</button>
               </div>
               <div v-if="item.submitted" class="result" :class="{ ok: item.isCorrect === true, bad: item.isCorrect === false }">
                 <strong>{{ item.resultLabel }}</strong>
                 <p v-if="item.question.question_type !== 'practical'">正确答案：{{ item.correctAnswer }}</p>
                 <p>{{ item.explanation || '本题暂无解析' }}</p>
+              </div>
+              <div v-if="feedbackOpen === item.question.id" class="feedback-form">
+                <strong>题目有误，请描述问题</strong>
+                <textarea v-model.trim="feedbackMessage" placeholder="例如：答案应该是 B / 表述有误 / 选项缺字等"></textarea>
+                <div class="actions">
+                  <button @click="submitFeedback">提交反馈</button>
+                  <button class="ghost" @click="closeFeedback">取消</button>
+                </div>
               </div>
             </article>
             <p v-if="!practiceItems.length" class="empty">没有题目，先上传文件或者手动新增几题。</p>
@@ -472,11 +540,15 @@
           <div class="search-row">
             <input v-model.trim="wrongFilter.search" placeholder="搜索错题" />
             <span>共 {{ wrongQuestions.length }} 题</span>
+            <button v-if="wrongQuestions.length" class="ghost" @click="startWrongRetry">全部重练</button>
           </div>
           <div v-if="wrongQuestions.length" class="list tall">
             <article v-for="item in wrongQuestions" :key="item.id" class="list-item">
               <div>
-                <strong>{{ item.stem }}</strong>
+                <strong>
+                  {{ item.stem }}
+                  <span v-if="(wrongCounts[item.id] || 0) > 1" class="badge">错 {{ wrongCounts[item.id] }} 次</span>
+                </strong>
                 <p class="muted">{{ labelOfLevel(item.level) }} · {{ labelOfType(item.question_type) }}</p>
                 <p class="muted">正确答案：{{ item.answer ? item.answer.join(' ') : '' }}</p>
               </div>
@@ -633,6 +705,83 @@
           </div>
         </section>
 
+        <section v-show="tab === 'roster'" class="panel stack">
+          <div class="section-head">
+            <h2>学习看板</h2>
+            <div class="inline">
+              <select v-model="rosterTeamFilter">
+                <option value="">全部班组</option>
+                <option v-for="team in rosterTeams" :key="team" :value="team">{{ team }}</option>
+              </select>
+              <button class="ghost" @click="loadRoster">刷新</button>
+              <button @click="exportRoster">导出 Excel</button>
+            </div>
+          </div>
+          <p v-if="!isAdmin" class="muted">只有管理员可以查看学习看板。</p>
+          <div v-else-if="rosterRows.length" class="table-wrap">
+            <table class="roster-table">
+              <thead>
+                <tr>
+                  <th>姓名</th>
+                  <th>班组</th>
+                  <th>做题数</th>
+                  <th>正确率</th>
+                  <th>错题数</th>
+                  <th>收藏</th>
+                  <th>考试次数</th>
+                  <th>平均分</th>
+                  <th>最近考试</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in filteredRosterRows()" :key="row.user_id">
+                  <td>{{ row.name }}</td>
+                  <td><input v-model.trim="row.team" class="team-input" @change="saveTeam(row)" placeholder="未分组" /></td>
+                  <td>{{ row.done }}</td>
+                  <td>{{ row.correctRate }}%</td>
+                  <td>{{ row.wrong }}</td>
+                  <td>{{ row.favorites }}</td>
+                  <td>{{ row.examCount }}</td>
+                  <td>{{ row.avgScore !== null ? row.avgScore : '—' }}</td>
+                  <td>{{ row.lastExam || '—' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p v-else class="empty">暂无数据，点击「刷新」加载。</p>
+        </section>
+
+        <section v-show="tab === 'review'" class="panel stack">
+          <div class="section-head">
+            <h2>纠错审核</h2>
+            <div class="inline">
+              <select v-model="feedbackFilter" @change="loadFeedback">
+                <option value="pending">待处理</option>
+                <option value="fixed">已处理</option>
+                <option value="ignored">已忽略</option>
+                <option value="">全部</option>
+              </select>
+              <button class="ghost" @click="loadFeedback">刷新</button>
+            </div>
+          </div>
+          <p v-if="!isAdmin" class="muted">只有管理员可以审核反馈。</p>
+          <div v-else-if="feedbackList.length" class="list">
+            <article v-for="item in feedbackList" :key="item.id" class="list-item feedback-item">
+              <div>
+                <strong>{{ item.stem }}</strong>
+                <p class="muted">{{ item.submitter }} · {{ item.dateText }}</p>
+                <p>反馈：{{ item.message }}</p>
+              </div>
+              <div v-if="item.status === 'pending'" class="actions">
+                <button @click="markFeedback(item.id, 'fixed')">已处理</button>
+                <button class="ghost" @click="markFeedback(item.id, 'ignored')">忽略</button>
+              </div>
+              <span v-else class="muted">{{ item.status === 'fixed' ? '状态：已处理' : '状态：已忽略' }}</span>
+            </article>
+          </div>
+          <p v-else class="empty">没有反馈记录。</p>
+        </section>
+
         <section v-show="tab === 'docs'" class="panel stack docs">
           <h2>部署教程</h2>
           <p>1. 在 Supabase 建一个项目。</p>
@@ -649,10 +798,11 @@
           <button :class="{ active: tab === 'exam' }" @click="tab = 'exam'">考试</button>
           <button :class="{ active: tab === 'wrong' }" @click="tab = 'wrong'">错题</button>
           <button :class="{ active: tab === 'profile' }" @click="tab = 'profile'">个人</button>
+          <button :class="{ active: ['learning', 'upload', 'admin', 'docs', 'roster', 'review', 'manage'].includes(tab) }" @click="tab = 'manage'">管理</button>
         </nav>
       </div>
     </template>
     <div id="app"></div>
-    <script type="module" src="./app.js?v=20260802-preview"></script>
+    <script type="module" src="./app.js?v=20260802-v4"></script>
   </body>
 </html>
