@@ -468,6 +468,47 @@ code {
   padding-right: 4px;
 }
 
+.practice-list {
+  margin-bottom: 14px;
+}
+
+.practice-items {
+  display: grid;
+  gap: 14px;
+}
+
+.practice-items .practice-card {
+  scroll-margin-top: 12px;
+}
+
+.options button:disabled {
+  cursor: default;
+  opacity: 0.85;
+}
+
+.practice-list .list.tall {
+  max-height: 280px;
+}
+
+.exam-section-title {
+  margin: 18px 0 10px;
+  padding: 8px 12px;
+  background: #f3f7fb;
+  border-left: 4px solid #2f6fed;
+  border-radius: 6px;
+  font-size: 16px;
+}
+
+.exam-section-title:first-child {
+  margin-top: 0;
+}
+
+.exam-no {
+  color: #2f6fed;
+  font-weight: 700;
+  margin-right: 4px;
+}
+
 .list-item,
 .question-card,
 .exam-item {
@@ -771,6 +812,10 @@ th {
   }
 
   .practice-side {
+    display: none;
+  }
+
+  .practice-list {
     display: none;
   }
 

@@ -13,7 +13,7 @@ import {
   supabaseClient,
 } from "./supabase.js";
 
-const { createApp, computed, onMounted, ref } = Vue;
+const { createApp, computed, onMounted, ref, watch } = Vue;
 
 const LEVELS = [
   { value: "junior", label: "初级" },
@@ -38,12 +38,12 @@ const EXAM_RULE = {
   single: 80,
   multiple: 10,
   judge: 10,
+  practical: 5,
   minutes: 60,
   passScore: 60,
 };
 
 const CONFIG = window.APP_CONFIG || {};
-const AI_ANALYSIS_ENABLED = Boolean(CONFIG.aiAnalysisEndpoint);
 const CSV_REQUIRED_FIELDS = ["question", "answer", "level"];
 const AUTH_EMAIL_KEY = "question_bank_auth_email";
 
@@ -428,8 +428,10 @@ createApp({
     const ready = ref(Boolean(hasSupabaseConfig && supabase));
     const tab = ref(window.INITIAL_TAB || "home");
     const userId = ref("");
-    const profileName = ref("");
+    const authMetaName = ref("");
+    const profileUsername = ref("");
     const authEmail = ref("");
+    const profileName = computed(() => authMetaName.value || profileUsername.value || authEmail.value || "");
     const profileForm = ref({
       mode: "sign_in",
       name: "",
@@ -458,11 +460,7 @@ createApp({
     const stats = ref({ totalQuestions: 0, doneQuestions: 0, correctRate: 0, favorites: 0 });
     const practiceFilter = ref({ level: "", type: "", source_file_id: "", search: "", favoritesOnly: false });
     const wrongFilter = ref({ level: "", type: "", search: "" });
-    const questionIndex = ref(0);
-    const selectedAnswers = ref([]);
-    const practicalAnswer = ref("");
-    const practiceResult = ref(null);
-    const practiceSubmitting = ref(false);
+    const practiceItems = ref([]);
     const examForm = ref({ level: "junior", mode: "answer" });
     const examQuestions = ref([]);
     const examAnswers = ref({});
@@ -472,7 +470,6 @@ createApp({
     const examTimer = ref(null);
     const examInProgress = ref(false);
     const examStartedAt = ref(null);
-    const aiAnalysisByQuestionId = ref({});
     const editor = ref({
       level: "junior",
       category: "输气工基础技术",
@@ -575,9 +572,30 @@ createApp({
       }).sort((a, b) => a.level.localeCompare(b.level) || a.name.localeCompare(b.name));
     });
 
-    const currentQuestion = computed(() => visibleQuestions.value[questionIndex.value] || null);
-    const currentStoredExplanation = computed(() => currentQuestion.value?.explanation || "");
     const answeredCount = computed(() => Object.keys(examAnswers.value).length);
+    const examSections = computed(() => {
+      const order = [
+        { type: "single", numeral: "一", name: "单选题" },
+        { type: "multiple", numeral: "二", name: "多选题" },
+        { type: "judge", numeral: "三", name: "判断题" },
+        { type: "practical", numeral: "四", name: "实操题" },
+      ];
+      const sections = [];
+      let number = 1;
+      for (const def of order) {
+        const questions = examQuestions.value.filter((item) => item.question_type === def.type);
+        if (!questions.length) continue;
+        const scoreText = def.type === "practical" ? "每题不计分" : "每题1分";
+        sections.push({
+          ...def,
+          questions,
+          startIndex: number,
+          title: `${def.numeral} ${def.name} ${scoreText} 共${questions.length}题`,
+        });
+        number += questions.length;
+      }
+      return sections;
+    });
     const selectedUploadSummary = computed(() => {
       const count = uploadForm.value.files ? uploadForm.value.files.length : 0;
       const skipped = uploadForm.value.skippedCount || 0;
@@ -653,8 +671,9 @@ createApp({
         single: Math.min(available.single || 0, EXAM_RULE.single),
         multiple: Math.min(available.multiple || 0, EXAM_RULE.multiple),
         judge: Math.min(available.judge || 0, EXAM_RULE.judge),
+        practical: Math.min(available.practical || 0, EXAM_RULE.practical),
       };
-      const total = planned.single + planned.multiple + planned.judge;
+      const total = planned.single + planned.multiple + planned.judge + planned.practical;
       const full = planned.single === EXAM_RULE.single
         && planned.multiple === EXAM_RULE.multiple
         && planned.judge === EXAM_RULE.judge;
@@ -708,9 +727,8 @@ createApp({
       const user = await getCurrentAuthUser();
       userId.value = user?.id || "";
       authEmail.value = user?.email || "";
-      profileName.value = user?.user_metadata?.display_name
+      authMetaName.value = user?.user_metadata?.display_name
         || user?.user_metadata?.full_name
-        || user?.email
         || "";
       if (authEmail.value) {
         localStorage.setItem(AUTH_EMAIL_KEY, authEmail.value);
@@ -746,6 +764,29 @@ createApp({
       };
     }
 
+    async function saveProfileName() {
+      try {
+        const client = await ensureClient();
+        const userIdNow = await requireSignedIn();
+        const name = profileForm.value.name.trim();
+        if (!name) throw new Error("请输入姓名");
+        const updateResult = await client.auth.updateUser({
+          data: { display_name: name, full_name: name },
+        });
+        if (updateResult.error) throw updateResult.error;
+        const profileResult = await client.from("profiles").upsert({
+          id: userIdNow,
+          username: name,
+        }, { onConflict: "id" });
+        if (profileResult.error) throw profileResult.error;
+        authMetaName.value = name;
+        profileUsername.value = name;
+        setMessage("姓名已更新");
+      } catch (err) {
+        setError(err.message || String(err));
+      }
+    }
+
     async function loginProfile() {
       try {
         const client = await ensureClient();
@@ -779,7 +820,8 @@ createApp({
       try {
         const result = await signOutUser();
         if (result.error) throw result.error;
-        profileName.value = "";
+        authMetaName.value = "";
+        profileUsername.value = "";
         authEmail.value = "";
         userId.value = "";
         profileForm.value = {
@@ -861,16 +903,21 @@ createApp({
       let favoriteResult = { data: [] };
       let recordResult = { data: [] };
       let examRecordResult = { data: [] };
+      let profileResult = { data: null };
       if (userId.value) {
         await ensureProfile(client);
-        [favoriteResult, recordResult, examRecordResult] = await Promise.all([
+        [favoriteResult, recordResult, examRecordResult, profileResult] = await Promise.all([
           client.from("favorites").select("question_id").eq("user_id", userId.value),
           client.from("answer_records").select("*").eq("user_id", userId.value),
           client.from("exam_records").select("*").eq("user_id", userId.value).order("created_at", { ascending: false }),
+          client.from("profiles").select("username").eq("id", userId.value).maybeSingle(),
         ]);
         if (favoriteResult.error) throw favoriteResult.error;
         if (recordResult.error) throw recordResult.error;
         if (examRecordResult.error) throw examRecordResult.error;
+      }
+      if (profileResult.data?.username) {
+        profileUsername.value = profileResult.data.username;
       }
 
       sourceFiles.value = sourceResult.data || [];
@@ -885,6 +932,10 @@ createApp({
       chapters.value = chapterResult.data || [];
       examRecords.value = examRecordResult.data || [];
 
+      refreshStatsLocal();
+    }
+
+    function refreshStatsLocal() {
       const records = answerRecords.value;
       const doneQuestions = new Set(records.map((item) => item.question_id)).size;
       const correctCount = records.filter((item) => item.is_correct === true).length;
@@ -1147,122 +1198,77 @@ createApp({
       }
     }
 
-    async function requestAiAnalysis(question) {
-      try {
-        if (!question) throw new Error("没有可解析的题目");
-        const endpoint = CONFIG.aiAnalysisEndpoint || "";
-        if (!endpoint) {
-          throw new Error("AI解析接口未配置。请在 app-config.js 填写 aiAnalysisEndpoint，接口接收 POST JSON：{ question }。");
-        }
-        aiAnalysisByQuestionId.value = {
-          ...aiAnalysisByQuestionId.value,
-          [question.id]: { text: "AI解析生成中..." },
-        };
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question }),
-        });
-        if (!response.ok) throw new Error(`AI解析接口返回 ${response.status}`);
-        const data = await response.json();
-        aiAnalysisByQuestionId.value = {
-          ...aiAnalysisByQuestionId.value,
-          [question.id]: { text: data.analysis || data.explanation || data.text || "AI接口未返回解析文本。" },
-        };
-      } catch (err) {
-        aiAnalysisByQuestionId.value = {
-          ...aiAnalysisByQuestionId.value,
-          [question?.id || "error"]: { text: err.message || String(err) },
-        };
-        setError(err.message || String(err));
+    function shuffleArray(list) {
+      const copy = [...list];
+      for (let i = copy.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
       }
+      return copy;
+    }
+
+    function buildPracticeItems() {
+      practiceItems.value = shuffleArray(visibleQuestions.value).map((question) => ({
+        question,
+        selected: [],
+        practicalText: "",
+        submitted: false,
+        isCorrect: null,
+        resultLabel: "",
+        correctAnswer: normalizeAnswer(question.answer).join(" "),
+        explanation: question.explanation || "",
+      }));
     }
 
     function resetPractice() {
-      questionIndex.value = 0;
-      selectedAnswers.value = [];
-      practicalAnswer.value = "";
-      practiceResult.value = null;
+      buildPracticeItems();
     }
 
     function shuffleQuestions() {
       practiceFilter.value.order = practiceFilter.value.order === "random" ? "newest" : "random";
-      shuffleInPlace(visibleQuestions.value);
-      resetPractice();
-    }
-
-    function shuffleInPlace(list) {
-      for (let i = list.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [list[i], list[j]] = [list[j], list[i]];
-      }
-      return list;
+      buildPracticeItems();
     }
 
     function loadIntoPractice(item) {
-      const index = visibleQuestions.value.findIndex((question) => question.id === item.id);
-      if (index >= 0) questionIndex.value = index;
-      selectedAnswers.value = [];
-      practicalAnswer.value = "";
-      practiceResult.value = null;
+      practiceFilter.value = { ...practiceFilter.value, level: "", type: "", source_file_id: "", search: "", favoritesOnly: false };
+      buildPracticeItems();
       tab.value = "practice";
+      Vue.nextTick(() => {
+        const el = document.getElementById(`q-${item.id}`);
+        if (el) el.scrollIntoView({ block: "start", behavior: "smooth" });
+      });
     }
 
     function enterLevel(level) {
       practiceFilter.value = { ...practiceFilter.value, level, type: "", source_file_id: "", search: "", favoritesOnly: false };
-      resetPractice();
+      buildPracticeItems();
       tab.value = "practice";
     }
 
-    function jumpToQuestion(index) {
-      questionIndex.value = index;
-      selectedAnswers.value = [];
-      practicalAnswer.value = "";
-      practiceResult.value = null;
-    }
+    watch(tab, (value) => {
+      if (value === "practice") buildPracticeItems();
+    });
 
-    function questionStatus(item) {
+    function optionClassFor(item, opt) {
+      const selected = item.selected.includes(opt.key);
+      const correct = normalizeAnswer(item.question.answer);
       return {
-        active: currentQuestion.value?.id === item.id,
-        done: answerRecords.value.some((record) => record.question_id === item.id),
-        favorite: favoriteSet.value.has(item.id),
+        active: selected && !item.submitted,
+        correct: item.submitted && correct.includes(opt.key),
+        wrong: item.submitted && selected && !correct.includes(opt.key),
       };
     }
 
-    function optionClass(opt) {
-      const selected = selectedAnswers.value.includes(opt.key);
-      const correct = practiceResult.value?.correctAnswers || [];
-      return {
-        active: selected && !practiceResult.value,
-        correct: practiceResult.value && correct.includes(opt.key),
-        wrong: practiceResult.value && selected && !correct.includes(opt.key),
-      };
-    }
-
-    async function toggleAnswer(value, type) {
-      if (type === "multiple") {
-        practiceResult.value = null;
-        selectedAnswers.value = selectedAnswers.value.includes(value)
-          ? selectedAnswers.value.filter((item) => item !== value)
-          : [...selectedAnswers.value, value];
-      } else {
-        selectedAnswers.value = [value];
-        await submitPractice([value]);
+    async function answerOption(item, key) {
+      if (item.submitted) return;
+      if (item.question.question_type === "multiple") {
+        item.selected = item.selected.includes(key)
+          ? item.selected.filter((k) => k !== key)
+          : [...item.selected, key];
+        return;
       }
-    }
-
-    function nextQuestion() {
-      if (questionIndex.value < visibleQuestions.value.length - 1) questionIndex.value += 1;
-      selectedAnswers.value = [];
-      practicalAnswer.value = "";
-      practiceResult.value = null;
-    }
-
-    function previousQuestion() {
-      if (questionIndex.value > 0) questionIndex.value -= 1;
-      selectedAnswers.value = [];
-      practicalAnswer.value = "";
-      practiceResult.value = null;
+      item.selected = [key];
+      await submitPracticeItem(item);
     }
 
     async function toggleFavorite(item) {
@@ -1276,42 +1282,37 @@ createApp({
           const result = await client.from("favorites").insert({ question_id: item.id, user_id: userId.value });
           if (result.error) throw result.error;
         }
-        await loadAll();
+        const next = new Set(favoriteSet.value);
+        if (next.has(item.id)) next.delete(item.id);
+        else next.add(item.id);
+        favoriteSet.value = next;
+        refreshStatsLocal();
       } catch (err) {
         setError(err.message || String(err));
       }
     }
 
-    async function submitPractice(explicitAnswers = null) {
-      if (practiceSubmitting.value) return;
+    async function submitPracticeItem(item) {
+      if (item.submitted) return;
       try {
-        practiceSubmitting.value = true;
         const client = await ensureClient();
         await requireSignedIn();
-        const question = currentQuestion.value;
-        if (!question) throw new Error("没有当前题目");
-
-        let result = {
-          label: "已保存",
-          is_correct: null,
-          correctAnswer: normalizeAnswer(question.answer).join(" "),
-          correctAnswers: normalizeAnswer(question.answer),
-          explanation: question.explanation || "",
-        };
-
+        const question = item.question;
         if (question.question_type === "practical") {
+          const submitted = normalizeAnswer(item.practicalText);
           const inserted = await insertAnswerRecord(client, {
             question_id: question.id,
             user_id: userId.value,
-            answer: normalizeAnswer(practicalAnswer.value).join(" "),
+            answer: submitted.join(" "),
             correct: null,
-            submitted_answer: normalizeAnswer(practicalAnswer.value),
+            submitted_answer: submitted,
             is_correct: null,
           });
           if (inserted.error) throw inserted.error;
-          result.label = "实操题已提交，当前版本只保存答案，暂不自动判分。";
+          item.isCorrect = null;
+          item.resultLabel = "实操题已提交，当前版本只保存答案，暂不自动判分。";
         } else {
-          const submitted = normalizeAnswer(explicitAnswers || selectedAnswers.value);
+          const submitted = normalizeAnswer(item.selected);
           if (!submitted.length) throw new Error("请先选择答案");
           const correct = normalizeAnswer(question.answer);
           const isCorrect = answersEqual(submitted, correct);
@@ -1324,21 +1325,26 @@ createApp({
             is_correct: isCorrect,
           });
           if (inserted.error) throw inserted.error;
-          result = {
-            label: isCorrect ? "答对了" : "答错了",
-            is_correct: isCorrect,
-            correctAnswer: correct.join(" "),
-            correctAnswers: correct,
-            explanation: question.explanation || "",
-          };
+          item.isCorrect = isCorrect;
+          item.resultLabel = isCorrect ? "答对了" : "答错了";
         }
-
-        practiceResult.value = result;
-        await loadAll();
+        item.submitted = true;
+        const questionId = question.id;
+        const submittedValue = question.question_type === "practical"
+          ? normalizeAnswer(item.practicalText)
+          : normalizeAnswer(item.selected);
+        answerRecords.value.push({
+          question_id: questionId,
+          user_id: userId.value,
+          answer: submittedValue.join(" "),
+          submitted_answer: submittedValue,
+          correct: item.isCorrect,
+          is_correct: item.isCorrect,
+          created_at: new Date().toISOString(),
+        });
+        refreshStatsLocal();
       } catch (err) {
         setError(err.message || String(err));
-      } finally {
-        practiceSubmitting.value = false;
       }
     }
 
@@ -1470,25 +1476,27 @@ createApp({
         const levelObj = LEVELS.find((item) => item.value === examForm.value.level)
           || { value: examForm.value.level, label: examForm.value.level };
         const levelKeys = levelCountKeys(levelObj);
-        const [singleCount, multipleCount, judgeCount] = await Promise.all([
+        const [singleCount, multipleCount, judgeCount, practicalCount] = await Promise.all([
           getQuestionCount(levelKeys, ["single"]),
           getQuestionCount(levelKeys, ["multiple"]),
           getQuestionCount(levelKeys, ["judge"]),
+          getQuestionCount(levelKeys, ["practical"]),
         ]);
-        const plan = buildExamPlan({ single: singleCount, multiple: multipleCount, judge: judgeCount });
-        if (!plan.total) throw new Error("当前等级还没有可用于考试的单选、多选或判断题");
+        const plan = buildExamPlan({
+          single: singleCount,
+          multiple: multipleCount,
+          judge: judgeCount,
+          practical: practicalCount,
+        });
+        if (!plan.total) throw new Error("当前等级还没有可用于考试的题目");
 
-        const [singles, multiples, judges] = await Promise.all([
+        const [singles, multiples, judges, practicals] = await Promise.all([
           getRandomQuestionsByLevel(levelKeys, ["single"], plan.single),
           getRandomQuestionsByLevel(levelKeys, ["multiple"], plan.multiple),
           getRandomQuestionsByLevel(levelKeys, ["judge"], plan.judge),
+          getRandomQuestionsByLevel(levelKeys, ["practical"], plan.practical),
         ]);
-        examQuestions.value = [
-          ...singles,
-          ...multiples,
-          ...judges,
-        ];
-        shuffleInPlace(examQuestions.value);
+        examQuestions.value = [...singles, ...multiples, ...judges, ...practicals];
         examAnswers.value = {};
         examResult.value = null;
         examSecondsLeft.value = EXAM_RULE.minutes * 60;
@@ -1505,7 +1513,7 @@ createApp({
         }, 500);
         tab.value = "exam";
         if (!plan.full) {
-          setMessage(`当前题库数量不足正式考试，已生成 ${plan.total} 题小型练习考。正式考试规则仍为 80 单选 + 10 多选 + 10 判断。`);
+          setMessage(`当前题库数量不足正式考试，已生成 ${plan.total} 题练习考（单选 ${plan.single} / 多选 ${plan.multiple} / 判断 ${plan.judge} / 实操 ${plan.practical}）。正式规则为 80 单选 + 10 多选 + 10 判断 + 5 实操。`);
         }
       } catch (err) {
         setError(err.message || String(err));
@@ -1571,7 +1579,7 @@ createApp({
           });
         }
 
-        const total = examQuestions.value.length;
+        const total = examQuestions.value.filter((item) => item.question_type !== "practical").length;
         const wrongCount = total - correctCount;
         const score = total ? Math.round((correctCount / total) * 100) : 0;
         const duration = examStartedAt.value ? Math.max(1, Math.floor((Date.now() - examStartedAt.value) / 1000)) : EXAM_RULE.minutes * 60;
@@ -1753,7 +1761,6 @@ createApp({
       uploadStatus,
       levels: LEVELS,
       questionTypes: QUESTION_TYPES,
-      aiAnalysisEnabled: AI_ANALYSIS_ENABLED,
       uploadForm,
       sourceFiles,
       questions,
@@ -1770,13 +1777,7 @@ createApp({
       wrongFilter,
       visibleQuestions,
       wrongQuestions,
-      questionIndex,
-      currentQuestion,
-      currentStoredExplanation,
-      selectedAnswers,
-      practicalAnswer,
-      practiceResult,
-      practiceSubmitting,
+      practiceItems,
       examForm,
       examRule: EXAM_RULE,
       examQuestions,
@@ -1784,7 +1785,7 @@ createApp({
       examResult,
       examRevealSet,
       examCountdown,
-      aiAnalysisByQuestionId,
+      examSections,
       editor,
       editingId,
       managedQuestions,
@@ -1798,6 +1799,7 @@ createApp({
       labelOfLevel: labelOfLevelLocal,
       labelOfType,
       fillCurrentProfile,
+      saveProfileName,
       loginProfile,
       logoutProfile,
       onPickUploadFile,
@@ -1808,15 +1810,10 @@ createApp({
       shuffleQuestions,
       loadIntoPractice,
       enterLevel,
-      jumpToQuestion,
-      questionStatus,
-      toggleAnswer,
-      optionClass,
-      nextQuestion,
-      previousQuestion,
+      answerOption,
+      optionClassFor,
+      submitPracticeItem,
       toggleFavorite,
-      submitPractice,
-      requestAiAnalysis,
       editQuestion,
       clearEditor,
       saveQuestion,

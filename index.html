@@ -13,7 +13,7 @@
         if (tab) window.INITIAL_TAB = tab;
       })();
     </script>
-    <script src="./app-config.js"></script>
+    <script src="./app-config.js?v=20260802-ai"></script>
   </head>
   <body>
     <template id="app-template">
@@ -109,20 +109,25 @@
             </div>
             <div class="form-grid profile-grid">
               <label>
-                Email
+                姓名
+                <input v-model.trim="profileForm.name" type="text" autocomplete="name" placeholder="注册后显示的名字" />
+              </label>
+              <label>
+                邮箱
                 <input v-model.trim="profileForm.email" type="email" autocomplete="username" placeholder="name@example.com" />
               </label>
               <label>
-                Password
-                <input v-model.trim="profileForm.password" type="password" autocomplete="current-password" placeholder="At least 6 characters" />
+                密码
+                <input v-model.trim="profileForm.password" type="password" autocomplete="current-password" placeholder="至少 6 位字符" />
               </label>
             </div>
             <div class="actions">
-              <button @click="loginProfile">{{ profileForm.mode === 'sign_up' ? 'Create account' : 'Sign in' }}</button>
+              <button @click="loginProfile">{{ profileForm.mode === 'sign_up' ? '注册账号' : '登录' }}</button>
               <button class="ghost" @click="profileForm.mode = profileForm.mode === 'sign_up' ? 'sign_in' : 'sign_up'">
-                {{ profileForm.mode === 'sign_up' ? 'Use existing account' : 'Create account' }}
+                {{ profileForm.mode === 'sign_up' ? '已有账号，去登录' : '没有账号，去注册' }}
               </button>
-              <button class="ghost" @click="logoutProfile">Sign out</button>
+              <button class="ghost" @click="logoutProfile">退出登录</button>
+              <button v-if="userId" class="ghost" @click="saveProfileName">保存姓名</button>
             </div>
             <div class="profile-summary">
               <article>
@@ -258,41 +263,46 @@
           </div>
         </section>
 
-        <section v-show="tab === 'practice'" class="panel grid-two practice-panel">
-          <div class="stack practice-main">
-            <div class="section-head">
-              <h2>刷题</h2>
-              <div class="inline practice-toolbar">
-                <select v-model="practiceFilter.level" @change="resetPractice">
-                  <option value="">全部等级</option>
-                  <option v-for="item in levels" :key="item.value" :value="item.value">{{ item.label }}</option>
-                </select>
-                <select v-model="practiceFilter.type" @change="resetPractice">
-                  <option value="">全部题型</option>
-                  <option v-for="item in questionTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
-                </select>
-                <select class="source-filter" v-model="practiceFilter.source_file_id" @change="resetPractice">
-                  <option value="">全部文件</option>
-                  <option v-for="item in sourceFiles" :key="item.id" :value="item.id">{{ item.original_name }}</option>
-                </select>
-                <button class="ghost" @click="shuffleQuestions">随机</button>
-              </div>
+        <section v-show="tab === 'practice'" class="panel stack practice-panel">
+          <div class="section-head">
+            <h2>刷题</h2>
+            <div class="inline practice-toolbar">
+              <select v-model="practiceFilter.level" @change="resetPractice">
+                <option value="">全部等级</option>
+                <option v-for="item in levels" :key="item.value" :value="item.value">{{ item.label }}</option>
+              </select>
+              <select v-model="practiceFilter.type" @change="resetPractice">
+                <option value="">全部题型</option>
+                <option v-for="item in questionTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
+              </select>
+              <select class="source-filter" v-model="practiceFilter.source_file_id" @change="resetPractice">
+                <option value="">全部文件</option>
+                <option v-for="item in sourceFiles" :key="item.id" :value="item.id">{{ item.original_name }}</option>
+              </select>
+              <button class="ghost" @click="shuffleQuestions">随机</button>
             </div>
-            <div class="question-card practice-card" v-if="currentQuestion">
+          </div>
+          <div class="practice-items">
+            <article
+              v-for="(item, index) in practiceItems"
+              :key="item.question.id"
+              :id="'q-' + item.question.id"
+              class="question-card practice-card"
+            >
               <div class="meta">
-                <span>{{ currentQuestion.chapter || currentQuestion.category || '未分章节' }}</span>
-                <span>{{ labelOfLevel(currentQuestion.level) }}</span>
-                <span>{{ labelOfType(currentQuestion.question_type) }}</span>
-                <span>{{ questionIndex + 1 }}/{{ visibleQuestions.length }}</span>
-                <span>{{ visibleQuestions.length ? Math.round(((questionIndex + 1) / visibleQuestions.length) * 100) : 0 }}%</span>
+                <span>第 {{ index + 1 }} 题</span>
+                <span>{{ item.question.chapter || item.question.category || '未分章节' }}</span>
+                <span>{{ labelOfLevel(item.question.level) }}</span>
+                <span>{{ labelOfType(item.question.question_type) }}</span>
               </div>
-              <h3 class="question-stem">{{ currentQuestion.stem }}</h3>
-              <div v-if="currentQuestion.options && currentQuestion.options.length" class="options">
+              <h3 class="question-stem">{{ item.question.stem }}</h3>
+              <div v-if="item.question.options && item.question.options.length" class="options">
                 <button
-                  v-for="opt in currentQuestion.options"
+                  v-for="opt in item.question.options"
                   :key="opt.key"
-                  :class="optionClass(opt)"
-                  @click="toggleAnswer(opt.key, currentQuestion.question_type)"
+                  :class="optionClassFor(item, opt)"
+                  :disabled="item.submitted"
+                  @click="answerOption(item, opt.key)"
                 >
                   <strong>{{ opt.key }}</strong>
                   <span>{{ opt.text }}</span>
@@ -300,81 +310,28 @@
               </div>
               <textarea
                 v-else
-                v-model="practicalAnswer"
-                placeholder="实操题先写你的步骤或要点，当前版本保存答案并显示解析，后续可接 AI 或人工判分。"
+                v-model="item.practicalText"
+                placeholder="实操题请写出你的步骤或要点，提交后保存答案，可由 AI 或人工判分。"
               ></textarea>
               <div class="actions">
-                <button v-if="currentQuestion.question_type === 'multiple' || currentQuestion.question_type === 'practical'" @click="submitPractice" :disabled="practiceSubmitting">
-                  {{ practiceSubmitting ? '判定中' : '提交' }}
+                <button
+                  v-if="item.question.question_type === 'multiple' || item.question.question_type === 'practical'"
+                  @click="submitPracticeItem(item)"
+                  :disabled="item.submitted"
+                >
+                  {{ item.submitted ? '已提交' : '提交' }}
                 </button>
-                <button class="ghost" @click="previousQuestion">上一题</button>
-                <button class="ghost" @click="toggleFavorite(currentQuestion)">
-                  {{ favoriteSet.has(currentQuestion.id) ? '取消收藏' : '收藏' }}
+                <button class="ghost" @click="toggleFavorite(item.question)">
+                  {{ favoriteSet.has(item.question.id) ? '取消收藏' : '收藏' }}
                 </button>
-                <button class="ghost" @click="nextQuestion">下一题</button>
-                <button v-if="aiAnalysisEnabled" class="ghost" @click="requestAiAnalysis(currentQuestion)">AI解析</button>
               </div>
-              <div v-if="practiceResult" class="result" :class="{ ok: practiceResult.is_correct === true, bad: practiceResult.is_correct === false }">
-                <strong>{{ practiceResult.label }}</strong>
-                <p v-if="practiceResult.correctAnswer">正确答案：{{ practiceResult.correctAnswer }}</p>
-                <p>{{ practiceResult.explanation || '暂无解析' }}</p>
+              <div v-if="item.submitted" class="result" :class="{ ok: item.isCorrect === true, bad: item.isCorrect === false }">
+                <strong>{{ item.resultLabel }}</strong>
+                <p v-if="item.question.question_type !== 'practical'">正确答案：{{ item.correctAnswer }}</p>
+                <p>{{ item.explanation || '本题暂无解析' }}</p>
               </div>
-              <div v-else-if="currentStoredExplanation" class="result info">
-                <strong>题目解析</strong>
-                <p>{{ currentStoredExplanation }}</p>
-              </div>
-              <div v-if="aiAnalysisByQuestionId[currentQuestion.id]" class="result">
-                <strong>AI解析</strong>
-                <p>{{ aiAnalysisByQuestionId[currentQuestion.id].text }}</p>
-              </div>
-            </div>
-            <div v-if="currentQuestion" class="mobile-bottom-actions">
-              <button class="ghost" @click="previousQuestion">上一题</button>
-              <button @click="toggleFavorite(currentQuestion)">{{ favoriteSet.has(currentQuestion.id) ? '已收藏' : '收藏' }}</button>
-              <button class="ghost" @click="nextQuestion">下一题</button>
-            </div>
-            <p v-else class="empty">没有题目，先上传文件或者手动新增几题。</p>
-          </div>
-
-          <div class="stack practice-side">
-            <h2>答题卡</h2>
-            <div class="answer-sheet">
-              <button
-                v-for="(item, index) in visibleQuestions"
-                :key="item.id"
-                :class="questionStatus(item)"
-                @click="jumpToQuestion(index)"
-              >
-                {{ index + 1 }}
-              </button>
-            </div>
-            <div class="sheet-legend">
-              <span><i class="done"></i>已答</span>
-              <span><i class="empty-dot"></i>未答</span>
-              <span><i class="fav"></i>收藏</span>
-            </div>
-            <h2>题目列表</h2>
-            <div class="search-row">
-              <input v-model.trim="practiceFilter.search" placeholder="搜索题干或解析" @input="resetPractice" />
-              <label class="checkbox">
-                <input type="checkbox" v-model="practiceFilter.favoritesOnly" @change="resetPractice" />
-                只看收藏
-              </label>
-            </div>
-            <div class="list tall">
-              <article v-for="item in visibleQuestions" :key="item.id" class="list-item">
-                <div>
-                  <strong>{{ item.stem }}</strong>
-                  <p class="muted">{{ labelOfLevel(item.level) }} · {{ labelOfType(item.question_type) }}</p>
-                  <p class="muted">{{ sourceName(item.source_file_id) }}</p>
-                </div>
-                <div class="actions">
-                  <button class="ghost" @click="loadIntoPractice(item)">练习</button>
-                  <button class="ghost" @click="editQuestion(item)">编辑</button>
-                  <button class="ghost" @click="toggleFavorite(item)">{{ favoriteSet.has(item.id) ? '已收藏' : '收藏' }}</button>
-                </div>
-              </article>
-            </div>
+            </article>
+            <p v-if="!practiceItems.length" class="empty">没有题目，先上传文件或者手动新增几题。</p>
           </div>
         </section>
 
@@ -393,6 +350,7 @@
               <span>单选 {{ examRule.single }} 题</span>
               <span>多选 {{ examRule.multiple }} 题</span>
               <span>判断 {{ examRule.judge }} 题</span>
+              <span>实操 {{ examRule.practical }} 题</span>
               <span>共 100 分</span>
               <span>{{ examRule.minutes }} 分钟</span>
               <span>{{ examRule.passScore }} 分及格</span>
@@ -401,43 +359,44 @@
               <button class="ghost" :class="{ active: examForm.mode === 'answer' }" @click="examForm.mode = 'answer'">答题模式</button>
               <button class="ghost" :class="{ active: examForm.mode === 'memorize' }" @click="examForm.mode = 'memorize'">背题模式</button>
             </div>
-            <p class="muted">模拟考试只抽理论单选、多选、判断题；实操题保留在刷题/背题库中。</p>
+            <p class="muted">模拟考试按 单选 → 多选 → 判断 → 实操 顺序出题；理论题每题 1 分，实操题不计入自动评分。</p>
             <div v-if="examQuestions.length" class="question-card">
               <div class="meta">
                 <span>已答 {{ answeredCount }}/{{ examQuestions.length }}</span>
                 <span>倒计时 {{ examCountdown }}</span>
                 <span>{{ examForm.mode === 'memorize' ? '背题模式' : '答题模式' }}</span>
               </div>
-              <div v-for="item in examQuestions" :key="item.id" class="exam-item">
-                <h3>{{ item.stem }}</h3>
-                <div v-if="item.question_type !== 'practical' && item.options && item.options.length" class="options compact">
-                  <button
-                    v-for="opt in item.options"
-                    :key="opt.key"
-                    :class="{ active: (examAnswers[item.id] || []).includes(opt.key) }"
-                    @click="toggleExamAnswer(item, opt.key)"
-                  >
-                    <strong>{{ opt.key }}</strong>
-                    <span>{{ opt.text }}</span>
-                  </button>
-                </div>
-                <textarea
-                  v-else
-                  :value="examAnswers[item.id] ? examAnswers[item.id].join(' ') : ''"
-                  @input="examAnswers[item.id] = [$event.target.value]"
-                  placeholder="实操题答案"
-                ></textarea>
-                <div v-if="examRevealSet.has(item.id) || examResult" class="result">
-                  <strong>答案解析</strong>
-                  <p v-if="item.question_type !== 'practical'">正确答案：{{ item.answer ? item.answer.join(' ') : '' }}</p>
-                  <p>{{ item.explanation || '暂无解析' }}</p>
-                  <p v-if="aiAnalysisByQuestionId[item.id]">AI解析：{{ aiAnalysisByQuestionId[item.id].text }}</p>
-                </div>
-                <div class="actions">
-                  <button v-if="examForm.mode === 'memorize'" class="ghost" @click="toggleExamReveal(item.id)">
-                    {{ examRevealSet.has(item.id) ? '隐藏答案' : '查看答案' }}
-                  </button>
-                  <button v-if="aiAnalysisEnabled" class="ghost" @click="requestAiAnalysis(item)">AI解析</button>
+              <div v-for="section in examSections" :key="section.type" class="exam-section">
+                <h3 class="exam-section-title">{{ section.title }}</h3>
+                <div v-for="(item, idx) in section.questions" :key="item.id" class="exam-item">
+                  <h3><span class="exam-no">{{ section.startIndex + idx }}.</span> {{ item.stem }}</h3>
+                  <div v-if="item.question_type !== 'practical' && item.options && item.options.length" class="options compact">
+                    <button
+                      v-for="opt in item.options"
+                      :key="opt.key"
+                      :class="{ active: (examAnswers[item.id] || []).includes(opt.key) }"
+                      @click="toggleExamAnswer(item, opt.key)"
+                    >
+                      <strong>{{ opt.key }}</strong>
+                      <span>{{ opt.text }}</span>
+                    </button>
+                  </div>
+                  <textarea
+                    v-else
+                    :value="examAnswers[item.id] ? examAnswers[item.id].join(' ') : ''"
+                    @input="examAnswers[item.id] = [$event.target.value]"
+                    placeholder="实操题答案"
+                  ></textarea>
+                  <div v-if="examRevealSet.has(item.id) || examResult" class="result">
+                    <strong>答案解析</strong>
+                    <p v-if="item.question_type !== 'practical'">正确答案：{{ item.answer ? item.answer.join(' ') : '' }}</p>
+                    <p>{{ item.explanation || '暂无解析' }}</p>
+                  </div>
+                  <div class="actions">
+                    <button v-if="examForm.mode === 'memorize'" class="ghost" @click="toggleExamReveal(item.id)">
+                      {{ examRevealSet.has(item.id) ? '隐藏答案' : '查看答案' }}
+                    </button>
+                  </div>
                 </div>
               </div>
               <button @click="submitExam">提交试卷</button>
@@ -694,6 +653,6 @@
       </div>
     </template>
     <div id="app"></div>
-    <script type="module" src="./app.js?v=20260802-mobile-profile"></script>
+    <script type="module" src="./app.js?v=20260802-preview"></script>
   </body>
 </html>
