@@ -11,7 +11,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260802-v4" />
+    <link rel="stylesheet" href="./styles.css?v=20260802-v5" />
     <script src="./vendor/vue.global.prod.js"></script>
     <script src="./vendor/mammoth.browser.min.js"></script>
     <script>
@@ -318,6 +318,10 @@
         <section v-show="tab === 'practice'" class="panel stack practice-panel">
           <div class="section-head">
             <h2>刷题</h2>
+            <div class="inline mode-switch">
+              <button class="ghost" :class="{ active: practiceViewMode === 'answer' }" @click="practiceViewMode = 'answer'">答题模式</button>
+              <button class="ghost" :class="{ active: practiceViewMode === 'memorize' }" @click="practiceViewMode = 'memorize'">背题模式</button>
+            </div>
             <div class="inline practice-toolbar">
               <select v-model="practiceFilter.level" @change="resetPractice">
                 <option value="">全部等级</option>
@@ -355,7 +359,25 @@
                 <span>{{ labelOfType(item.question.question_type) }}</span>
               </div>
               <h3 class="question-stem">{{ item.question.stem }}</h3>
-              <div v-if="item.question.options && item.question.options.length" class="options">
+              <div v-if="item.question.question_type === 'judge'" class="options judge-options">
+                <button
+                  :class="optionClassFor(item, { key: '√' })"
+                  :disabled="item.submitted || practiceViewMode === 'memorize'"
+                  @click="answerOption(item, '√')"
+                >
+                  <strong>✅</strong>
+                  <span>正确</span>
+                </button>
+                <button
+                  :class="optionClassFor(item, { key: '×' })"
+                  :disabled="item.submitted || practiceViewMode === 'memorize'"
+                  @click="answerOption(item, '×')"
+                >
+                  <strong>❌</strong>
+                  <span>错误</span>
+                </button>
+              </div>
+              <div v-else-if="item.question.options && item.question.options.length" class="options">
                 <button
                   v-for="opt in item.question.options"
                   :key="opt.key"
@@ -374,7 +396,7 @@
               ></textarea>
               <div class="actions">
                 <button
-                  v-if="item.question.question_type === 'multiple' || item.question.question_type === 'practical'"
+                  v-if="(item.question.question_type === 'multiple' || item.question.question_type === 'practical') && practiceViewMode !== 'memorize'"
                   @click="submitPracticeItem(item)"
                   :disabled="item.submitted"
                 >
@@ -384,6 +406,10 @@
                   {{ favoriteSet.has(item.question.id) ? '取消收藏' : '收藏' }}
                 </button>
                 <button class="ghost" @click="openFeedback(item.question)">题目有误</button>
+              </div>
+              <div v-if="practiceViewMode === 'memorize'" class="result info">
+                <strong>正确答案：{{ item.correctAnswer }}</strong>
+                <p>{{ item.explanation || '暂无解析' }}</p>
               </div>
               <div v-if="item.submitted" class="result" :class="{ ok: item.isCorrect === true, bad: item.isCorrect === false }">
                 <strong>{{ item.resultLabel }}</strong>
@@ -423,22 +449,34 @@
               <span>{{ examRule.minutes }} 分钟</span>
               <span>{{ examRule.passScore }} 分及格</span>
             </div>
-            <div class="inline mode-switch">
-              <button class="ghost" :class="{ active: examForm.mode === 'answer' }" @click="examForm.mode = 'answer'">答题模式</button>
-              <button class="ghost" :class="{ active: examForm.mode === 'memorize' }" @click="examForm.mode = 'memorize'">背题模式</button>
-            </div>
-            <p class="muted">模拟考试按 单选 → 多选 → 判断 → 实操 顺序出题；理论题每题 1 分，实操题不计入自动评分。</p>
+            <p class="muted">模拟考试按 单选 → 多选 → 判断 → 实操 顺序出题；理论题每题 1 分，实操题不计入自动评分；需全部答完才能提交判分。</p>
             <div v-if="examQuestions.length" class="question-card">
               <div class="meta">
                 <span>已答 {{ answeredCount }}/{{ examQuestions.length }}</span>
                 <span>倒计时 {{ examCountdown }}</span>
-                <span>{{ examForm.mode === 'memorize' ? '背题模式' : '答题模式' }}</span>
+                <span>答题模式</span>
               </div>
               <div v-for="section in examSections" :key="section.type" class="exam-section">
                 <h3 class="exam-section-title">{{ section.title }}</h3>
                 <div v-for="(item, idx) in section.questions" :key="item.id" class="exam-item">
                   <h3><span class="exam-no">{{ section.startIndex + idx }}.</span> {{ item.stem }}</h3>
-                  <div v-if="item.question_type !== 'practical' && item.options && item.options.length" class="options compact">
+                  <div v-if="item.question_type === 'judge'" class="options compact judge-options">
+                    <button
+                      :class="{ active: (examAnswers[item.id] || []).includes('√') }"
+                      @click="toggleExamAnswer(item, '√')"
+                    >
+                      <strong>✅</strong>
+                      <span>正确</span>
+                    </button>
+                    <button
+                      :class="{ active: (examAnswers[item.id] || []).includes('×') }"
+                      @click="toggleExamAnswer(item, '×')"
+                    >
+                      <strong>❌</strong>
+                      <span>错误</span>
+                    </button>
+                  </div>
+                  <div v-else-if="item.question_type !== 'practical' && item.options && item.options.length" class="options compact">
                     <button
                       v-for="opt in item.options"
                       :key="opt.key"
@@ -460,11 +498,6 @@
                     <p v-if="item.question_type !== 'practical'">正确答案：{{ item.answer ? item.answer.join(' ') : '' }}</p>
                     <p>{{ item.explanation || '暂无解析' }}</p>
                   </div>
-                  <div class="actions">
-                    <button v-if="examForm.mode === 'memorize'" class="ghost" @click="toggleExamReveal(item.id)">
-                      {{ examRevealSet.has(item.id) ? '隐藏答案' : '查看答案' }}
-                    </button>
-                  </div>
                 </div>
               </div>
               <button @click="submitExam">提交试卷</button>
@@ -476,7 +509,6 @@
             <h2>考试结果</h2>
             <div v-if="examResult" class="result">
               <strong>总分 {{ examResult.score }} 分，{{ examResult.passed ? '及格' : '未及格' }}</strong>
-              <p>模式：{{ examResult.mode === 'memorize' ? '背题模式' : '答题模式' }}</p>
               <p>正确数 {{ examResult.correctCount }}，错误数 {{ examResult.wrongCount }}</p>
               <p>正确率 {{ examResult.correctRate }}%，及格线 {{ examRule.passScore }} 分</p>
               <p>考试时间 {{ examResult.durationText }}</p>
@@ -803,6 +835,6 @@
       </div>
     </template>
     <div id="app"></div>
-    <script type="module" src="./app.js?v=20260802-v4"></script>
+    <script type="module" src="./app.js?v=20260802-v5"></script>
   </body>
 </html>

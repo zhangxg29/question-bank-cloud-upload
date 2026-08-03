@@ -591,6 +591,15 @@ code {
   border-color: #2f6fed;
 }
 
+.judge-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.judge-options button {
+  min-height: 64px;
+  font-size: 20px;
+}
+
 .list-item,
 .question-card,
 .exam-item {

@@ -474,6 +474,7 @@ createApp({
     const wrongFilter = ref({ level: "", type: "", search: "" });
     const practiceItems = ref([]);
     const practiceMode = ref("practice");
+    const practiceViewMode = ref("answer");
     const feedbackOpen = ref(null);
     const feedbackMessage = ref("");
     const feedbackList = ref([]);
@@ -1317,7 +1318,13 @@ createApp({
 
     function buildPracticeItems(list = null) {
       const source = list || (practiceMode.value === "wrong" ? wrongQuestions.value : visibleQuestions.value);
-      practiceItems.value = shuffleArray(source).map((question) => ({
+      const typeOrder = { single: 0, multiple: 1, judge: 2, practical: 3 };
+      const ordered = [...source].sort((a, b) => {
+        const ta = typeOrder[a.question_type] ?? 9;
+        const tb = typeOrder[b.question_type] ?? 9;
+        return ta - tb || String(a.id).localeCompare(String(b.id));
+      });
+      practiceItems.value = ordered.map((question) => ({
         question,
         selected: [],
         practicalText: "",
@@ -1335,7 +1342,7 @@ createApp({
 
     function shuffleQuestions() {
       practiceFilter.value.order = practiceFilter.value.order === "random" ? "newest" : "random";
-      buildPracticeItems();
+      practiceItems.value = shuffleArray(practiceItems.value);
     }
 
     function startWrongRetry() {
@@ -1830,11 +1837,6 @@ createApp({
       } else {
         examAnswers.value[question.id] = [value];
       }
-      if (examForm.value.mode === "memorize") {
-        const next = new Set(examRevealSet.value);
-        next.add(question.id);
-        examRevealSet.value = next;
-      }
     }
 
     async function submitExam() {
@@ -1844,6 +1846,17 @@ createApp({
         clearExamTimer();
         const client = await ensureClient();
         await requireSignedIn();
+        const unanswered = examQuestions.value.filter((q) => {
+          if (q.question_type === "practical") {
+            return !String(examAnswers.value[q.id]?.[0] || "").trim();
+          }
+          return !normalizeAnswer(examAnswers.value[q.id] || []).length;
+        });
+        if (unanswered.length) {
+          setError(`还有 ${unanswered.length} 题未作答，请全部答完后再提交。`);
+          examInProgress.value = false;
+          return;
+        }
         const wrongQuestions = [];
         const manualReview = [];
         let correctCount = 0;
@@ -2099,6 +2112,7 @@ createApp({
       wrongQuestions,
       practiceItems,
       practiceMode,
+      practiceViewMode,
       startWrongRetry,
       exitWrongRetry,
       wrongCounts,
