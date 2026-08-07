@@ -11,7 +11,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
-    <link rel="stylesheet" href="./styles.css?v=20260802-v5" />
+    <link rel="stylesheet" href="./styles.css?v=20260807-collections" />
     <script src="./vendor/vue.global.prod.js"></script>
     <script src="./vendor/mammoth.browser.min.js"></script>
     <script>
@@ -39,7 +39,7 @@
           </div>
           <button class="profile-chip" @click="tab = 'profile'">
             <span>{{ profileName || '未登录' }}</span>
-            <strong>{{ profileName ? '个人中心' : '登录' }}</strong>
+            <strong>{{ profileName ? '个人及管理' : '登录' }}</strong>
           </button>
         </header>
 
@@ -52,9 +52,8 @@
           <button :class="{ active: tab === 'home' }" @click="tab = 'home'">首页</button>
           <button :class="{ active: tab === 'practice' }" @click="tab = 'practice'">刷题</button>
           <button :class="{ active: tab === 'exam' }" @click="tab = 'exam'">模拟考试</button>
-          <button :class="{ active: tab === 'wrong' }" @click="tab = 'wrong'">错题集</button>
-          <button :class="{ active: tab === 'profile' }" @click="tab = 'profile'">个人</button>
-          <button :class="{ active: ['learning', 'upload', 'admin', 'docs', 'roster', 'review', 'manage'].includes(tab) }" @click="tab = 'manage'">管理</button>
+          <button :class="{ active: tab === 'wrong' }" @click="tab = 'wrong'">错题收藏集</button>
+          <button :class="{ active: ['profile', 'learning', 'upload', 'admin', 'docs', 'roster', 'review', 'manage'].includes(tab) }" @click="tab = 'profile'">个人及管理</button>
         </section>
 
         <section v-if="message" class="panel success">{{ message }}</section>
@@ -113,10 +112,10 @@
           </div>
         </section>
 
-        <section v-show="tab === 'profile'" class="panel grid-two profile-panel">
+        <section v-show="['profile', 'manage'].includes(tab)" class="panel grid-two profile-panel">
           <div class="stack">
             <div class="section-head">
-              <h2>个人登录</h2>
+              <h2>个人及管理</h2>
               <button class="ghost" @click="fillCurrentProfile">使用当前档案</button>
             </div>
             <div class="actions mode-switch">
@@ -208,9 +207,9 @@
           </div>
         </section>
 
-        <section v-show="tab === 'manage'" class="panel stack">
+        <section v-show="['profile', 'manage'].includes(tab)" class="panel stack">
           <div class="section-head">
-            <h2>管理</h2>
+            <h2>管理入口</h2>
             <button class="ghost" @click="refreshAll">刷新数据</button>
           </div>
           <div class="manage-grid">
@@ -556,41 +555,46 @@
 
         <section v-show="tab === 'wrong'" class="panel stack">
           <div class="section-head">
-            <h2>错题集</h2>
-            <div class="inline">
-              <select v-model="wrongFilter.level">
-                <option value="">全部等级</option>
-                <option v-for="item in levels" :key="item.value" :value="item.value">{{ item.label }}</option>
-              </select>
-              <select v-model="wrongFilter.type">
-                <option value="">全部题型</option>
-                <option v-for="item in questionTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
-              </select>
-              <button class="ghost" @click="resetWrongFilters">清空筛选</button>
+            <h2>错题收藏集</h2>
+            <div class="actions mode-switch">
+              <button class="ghost" :class="{ active: collectionMode === 'wrong' }" @click="collectionMode = 'wrong'">错题 {{ wrongQuestions.length }}</button>
+              <button class="ghost" :class="{ active: collectionMode === 'favorites' }" @click="collectionMode = 'favorites'">收藏 {{ favoriteQuestions.length }}</button>
             </div>
           </div>
-          <div class="search-row">
-            <input v-model.trim="wrongFilter.search" placeholder="搜索错题" />
-            <span>共 {{ wrongQuestions.length }} 题</span>
-            <button v-if="wrongQuestions.length" class="ghost" @click="startWrongRetry">全部重练</button>
+          <div class="inline">
+            <select v-model="wrongFilter.level">
+              <option value="">全部等级</option>
+              <option v-for="item in levels" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+            <select v-model="wrongFilter.type">
+              <option value="">全部题型</option>
+              <option v-for="item in questionTypes" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+            <button class="ghost" @click="resetWrongFilters">清空筛选</button>
           </div>
-          <div v-if="wrongQuestions.length" class="list tall">
-            <article v-for="item in wrongQuestions" :key="item.id" class="list-item">
+          <div class="search-row">
+            <input v-model.trim="wrongFilter.search" :placeholder="collectionMode === 'wrong' ? '搜索错题' : '搜索收藏题'" />
+            <span>共 {{ collectionQuestions.length }} 题</span>
+            <button v-if="collectionMode === 'wrong' && wrongQuestions.length" class="ghost" @click="startWrongRetry">错题重练</button>
+          </div>
+          <div v-if="collectionQuestions.length" class="list tall">
+            <article v-for="item in collectionQuestions" :key="item.id" class="list-item">
               <div>
                 <strong>
                   {{ item.stem }}
-                  <span v-if="(wrongCounts[item.id] || 0) > 1" class="badge">错 {{ wrongCounts[item.id] }} 次</span>
+                  <span v-if="collectionMode === 'wrong' && (wrongCounts[item.id] || 0)" class="badge">错 {{ wrongCounts[item.id] }} 次</span>
+                  <span v-if="favoriteSet.has(item.id)" class="badge">已收藏</span>
                 </strong>
                 <p class="muted">{{ labelOfLevel(item.level) }} · {{ labelOfType(item.question_type) }}</p>
                 <p class="muted">正确答案：{{ item.answer ? item.answer.join(' ') : '' }}</p>
               </div>
               <div class="actions">
                 <button class="ghost" @click="loadIntoPractice(item)">练习</button>
-                <button class="ghost" @click="toggleFavorite(item)">{{ favoriteSet.has(item.id) ? '已收藏' : '收藏' }}</button>
+                <button class="ghost" @click="toggleFavorite(item)">{{ favoriteSet.has(item.id) ? '取消收藏' : '收藏' }}</button>
               </div>
             </article>
           </div>
-          <p v-else class="empty">还没有错题记录。</p>
+          <p v-else class="empty">{{ collectionMode === 'wrong' ? '还没有错题记录。' : '还没有收藏题目。' }}</p>
         </section>
 
         <section v-show="tab === 'admin'" class="panel stack">
@@ -756,6 +760,8 @@
                 <tr>
                   <th>姓名</th>
                   <th>班组</th>
+                  <th>最近上线</th>
+                  <th>最近刷题</th>
                   <th>做题数</th>
                   <th>正确率</th>
                   <th>错题数</th>
@@ -769,6 +775,8 @@
                 <tr v-for="row in filteredRosterRows()" :key="row.user_id">
                   <td>{{ row.name }}</td>
                   <td><input v-model.trim="row.team" class="team-input" @change="saveTeam(row)" placeholder="未分组" /></td>
+                  <td>{{ row.lastSeenAt || '—' }}</td>
+                  <td>{{ row.lastPracticeAt || '—' }}</td>
                   <td>{{ row.done }}</td>
                   <td>{{ row.correctRate }}%</td>
                   <td>{{ row.wrong }}</td>
@@ -828,13 +836,12 @@
           <button :class="{ active: tab === 'home' }" @click="tab = 'home'">首页</button>
           <button :class="{ active: tab === 'practice' }" @click="tab = 'practice'">刷题</button>
           <button :class="{ active: tab === 'exam' }" @click="tab = 'exam'">考试</button>
-          <button :class="{ active: tab === 'wrong' }" @click="tab = 'wrong'">错题</button>
-          <button :class="{ active: tab === 'profile' }" @click="tab = 'profile'">个人</button>
-          <button :class="{ active: ['learning', 'upload', 'admin', 'docs', 'roster', 'review', 'manage'].includes(tab) }" @click="tab = 'manage'">管理</button>
+          <button :class="{ active: tab === 'wrong' }" @click="tab = 'wrong'">错藏</button>
+          <button :class="{ active: ['profile', 'learning', 'upload', 'admin', 'docs', 'roster', 'review', 'manage'].includes(tab) }" @click="tab = 'profile'">我的</button>
         </nav>
       </div>
     </template>
     <div id="app"></div>
-    <script type="module" src="./app.js?v=20260802-v5"></script>
+    <script type="module" src="./app.js?v=20260807-collections"></script>
   </body>
 </html>

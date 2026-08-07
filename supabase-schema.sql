@@ -20,6 +20,7 @@ $$;
 create table if not exists public.profiles (
   id uuid primary key default gen_random_uuid(),
   username text not null default '',
+  last_seen_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -66,6 +67,7 @@ create table if not exists public.questions (
 
 alter table public.profiles
   add column if not exists username text not null default '',
+  add column if not exists last_seen_at timestamptz,
   add column if not exists created_at timestamptz not null default now();
 
 alter table public.source_files
@@ -196,6 +198,7 @@ create trigger questions_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+create index if not exists profiles_last_seen_idx on public.profiles (last_seen_at desc);
 create index if not exists source_files_created_at_idx on public.source_files (created_at desc);
 create index if not exists questions_level_idx on public.questions (level);
 create index if not exists questions_scope_idx on public.questions (scope);

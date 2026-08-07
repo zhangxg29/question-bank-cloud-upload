@@ -472,6 +472,7 @@ createApp({
     const stats = ref({ totalQuestions: 0, doneQuestions: 0, correctRate: 0, favorites: 0 });
     const practiceFilter = ref({ level: "", type: "", source_file_id: "", search: "", favoritesOnly: false });
     const wrongFilter = ref({ level: "", type: "", search: "" });
+    const collectionMode = ref("wrong");
     const practiceItems = ref([]);
     const practiceMode = ref("practice");
     const practiceViewMode = ref("answer");
@@ -643,8 +644,8 @@ createApp({
       });
       return map;
     });
-    const wrongQuestions = computed(() => {
-      let list = questions.value.filter((item) => (wrongCounts.value[item.id] || 0) > 0);
+    function filterCollectionQuestions(items) {
+      let list = [...items];
       if (wrongFilter.value.level) {
         const level = LEVELS.find((item) => item.value === wrongFilter.value.level);
         list = level ? list.filter((item) => levelMatches(item, level)) : list.filter((item) => item.level === wrongFilter.value.level);
@@ -654,8 +655,15 @@ createApp({
         const keyword = wrongFilter.value.search.toLowerCase();
         list = list.filter((item) => `${item.stem} ${item.explanation || ""}`.toLowerCase().includes(keyword));
       }
+      return list;
+    }
+
+    const wrongQuestions = computed(() => {
+      const list = filterCollectionQuestions(questions.value.filter((item) => (wrongCounts.value[item.id] || 0) > 0));
       return [...list].sort((a, b) => (wrongCounts.value[b.id] || 0) - (wrongCounts.value[a.id] || 0));
     });
+    const favoriteQuestions = computed(() => filterCollectionQuestions(questions.value.filter((item) => favoriteSet.value.has(item.id))));
+    const collectionQuestions = computed(() => (collectionMode.value === "favorites" ? favoriteQuestions.value : wrongQuestions.value));
     const examCountdown = computed(() => formatCountdown(examSecondsLeft.value));
 
     function setMessage(text) {
@@ -716,6 +724,20 @@ createApp({
       const minutes = Math.floor((safe % 3600) / 60);
       const seconds = safe % 60;
       return [hours, minutes, seconds].map((item) => String(item).padStart(2, "0")).join(":");
+    }
+
+    function formatDateMinute(value) {
+      if (!value) return "";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return "";
+      return date.toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).replace(/\//g, "-");
     }
 
     function clearExamTimer() {
@@ -788,13 +810,25 @@ createApp({
       return userId.value;
     }
 
+    async function upsertProfile(client, payload) {
+      const result = await client.from("profiles").upsert(payload, { onConflict: "id" });
+      if (!result.error) return result;
+      if (isSchemaColumnError(result.error) && Object.prototype.hasOwnProperty.call(payload, "last_seen_at")) {
+        const { last_seen_at, ...legacyPayload } = payload;
+        const retry = await client.from("profiles").upsert(legacyPayload, { onConflict: "id" });
+        if (!retry.error) return retry;
+        throw retry.error;
+      }
+      throw result.error;
+    }
+
     async function ensureProfile(client) {
       if (!userId.value) return;
-      const result = await client.from("profiles").upsert({
+      await upsertProfile(client, {
         id: userId.value,
         username: profileName.value || authEmail.value || `用户${userId.value.slice(0, 8)}`,
-      }, { onConflict: "id" });
-      if (result.error) throw result.error;
+        last_seen_at: new Date().toISOString(),
+      });
     }
 
     function fillCurrentProfile() {
@@ -816,11 +850,11 @@ createApp({
           data: { display_name: name, full_name: name },
         });
         if (updateResult.error) throw updateResult.error;
-        const profileResult = await client.from("profiles").upsert({
+        await upsertProfile(client, {
           id: userIdNow,
           username: name,
-        }, { onConflict: "id" });
-        if (profileResult.error) throw profileResult.error;
+          last_seen_at: new Date().toISOString(),
+        });
         authMetaName.value = name;
         profileUsername.value = name;
         setMessage("姓名已更新");
@@ -1349,7 +1383,7 @@ createApp({
       practiceMode.value = "wrong";
       buildPracticeItems(wrongQuestions.value);
       tab.value = "practice";
-      setMessage(`错题重练模式：共 ${wrongQuestions.value.length} 题，答对自动移出错题集。`);
+      setMessage(`错题重练模式：共 ${wrongQuestions.value.length} 题，答对后仍保留在错题收藏集。`);
     }
 
     function exitWrongRetry() {
@@ -1507,17 +1541,24 @@ createApp({
           const correct = auto.filter((r) => r.is_correct === true).length;
           const userExams = exams.filter((e) => e.user_id === p.id);
           const avgScore = userExams.length ? Math.round(userExams.reduce((s, e) => s + e.score, 0) / userExams.length) : null;
+          const lastPractice = userRecords.reduce((latest, record) => {
+            if (!record.created_at) return latest;
+            if (!latest || new Date(record.created_at) > new Date(latest)) return record.created_at;
+            return latest;
+          }, "");
           return {
             user_id: p.id,
             name: p.username || "未设置",
             team: p.team || "",
+            lastSeenAt: formatDateMinute(p.last_seen_at),
+            lastPracticeAt: formatDateMinute(lastPractice),
             done: new Set(userRecords.map((r) => r.question_id)).size,
             correctRate: auto.length ? Math.round((correct / auto.length) * 100) : 0,
             wrong: new Set(userRecords.filter((r) => r.is_correct === false).map((r) => r.question_id)).size,
             favorites: favs.filter((f) => f.user_id === p.id).length,
             examCount: userExams.length,
             avgScore,
-            lastExam: userExams[0]?.created_at ? new Date(userExams[0].created_at).toLocaleString("zh-CN") : "",
+            lastExam: userExams[0]?.created_at ? formatDateMinute(userExams[0].created_at) : "",
           };
         });
       } catch (err) {
@@ -1549,9 +1590,9 @@ createApp({
         return;
       }
       const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-      const header = ["姓名", "班组", "做题数", "正确率%", "错题数", "收藏", "考试次数", "平均分", "最近考试"];
+      const header = ["姓名", "班组", "最近上线", "最近刷题", "做题数", "正确率%", "错题数", "收藏", "考试次数", "平均分", "最近考试"];
       const lines = [header.join(",")];
-      rows.forEach((r) => lines.push([r.name, r.team, r.done, r.correctRate, r.wrong, r.favorites, r.examCount, r.avgScore ?? "", r.lastExam].map(esc).join(",")));
+      rows.forEach((r) => lines.push([r.name, r.team, r.lastSeenAt, r.lastPracticeAt, r.done, r.correctRate, r.wrong, r.favorites, r.examCount, r.avgScore ?? "", r.lastExam].map(esc).join(",")));
       const blob = new Blob(["\ufeff" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
@@ -1617,24 +1658,8 @@ createApp({
         }
         item.submitted = true;
         const questionId = question.id;
-        if (item.isCorrect === true) {
-          const delResult = await client
-            .from("answer_records")
-            .delete()
-            .eq("question_id", questionId)
-            .eq("user_id", userId.value)
-            .eq("is_correct", false);
-          if (delResult.error) throw delResult.error;
-          answerRecords.value = answerRecords.value.filter(
-            (record) => !(record.question_id === questionId && record.is_correct === false)
-          );
-          if (practiceMode.value === "wrong") {
-            if (wrongQuestions.value.length === 0) {
-              setMessage("错题已全部清零，干得漂亮！");
-            } else {
-              setMessage("答对了，已移出错题集！");
-            }
-          }
+        if (item.isCorrect === true && practiceMode.value === "wrong") {
+          setMessage("答对了，仍保留在错题收藏集，方便后续复盘。");
         }
         const submittedValue = question.question_type === "practical"
           ? normalizeAnswer(item.practicalText)
@@ -2108,8 +2133,11 @@ createApp({
       chapterMastery,
       practiceFilter,
       wrongFilter,
+      collectionMode,
       visibleQuestions,
       wrongQuestions,
+      favoriteQuestions,
+      collectionQuestions,
       practiceItems,
       practiceMode,
       practiceViewMode,
